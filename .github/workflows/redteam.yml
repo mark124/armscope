@@ -1,0 +1,62 @@
+name: red team
+
+# Deliberately tries to make sq8's advantage disappear:
+#   - every FAISS int8 mode, in case the original baseline was a strawman
+#   - SimSIMD, which already ships Arm int8 kernels and is the real state of the art
+#   - FAISS given every core, since sq8 is single threaded
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "bench/redteam.py"
+      - ".github/workflows/redteam.yml"
+
+jobs:
+  redteam:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Host
+        run: python tools/cpuid.py
+
+      - name: Build sq8
+        working-directory: sq8
+        run: |
+          gcc -O3 -fPIC -shared -march=armv8.2-a+dotprod+i8mm \
+            -o libsq8.so sq8.c -lm
+
+      - name: Install rivals
+        run: pip install --quiet faiss-cpu numpy simsimd
+
+      - name: What Arm kernels does SimSIMD actually ship
+        run: |
+          pip install --quiet capstone pyelftools
+          python - <<'PY'
+          import glob, pathlib, sys
+          sys.path.insert(0, "armscope")
+          import scan
+          hits = glob.glob("/opt/hostedtoolcache/Python/*/arm64/lib/python*/site-packages/simsimd*.so")
+          hits += glob.glob("/opt/hostedtoolcache/Python/*/arm64/lib/python*/site-packages/**/simsimd*.so", recursive=True)
+          for h in sorted(set(hits)):
+              r = scan.scan_elf(pathlib.Path(h).read_bytes())
+              if not r:
+                  continue
+              print(f"{h.split('/')[-1]:<34} {r['instructions']:>9,} insns "
+                    f"cov {r['coverage']*100:5.1f}%  {r['features']}")
+          PY
+
+      - name: Adversarial benchmark
+        run: python bench/redteam.py | tee redteam.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: redteam
+          path: redteam.txt
