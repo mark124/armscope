@@ -126,6 +126,38 @@ def main() -> None:
         except Exception as exc:  # noqa: BLE001
             print(f"  {name} failed: {str(exc)[:70]}")
 
+    # PQ fast-scan is the comparison most likely to invalidate this project.
+    # It has had NEON SIMD since FAISS PR #1815, and unlike synthetic Gaussian
+    # noise, REAL embeddings have exactly the sub-space structure PQ exploits.
+    # This is where it should win if it is going to.
+    for m in (d // 2, d // 4, d // 8):
+        if m <= 0 or d % m:
+            continue
+        try:
+            pq = faiss.IndexPQFastScan(d, m, 4, faiss.METRIC_INNER_PRODUCT)
+            pq.train(xb)
+            pq.add(xb)
+            t = timed(lambda: pq.search(xq, K), reps=3)
+            r = recall(pq.search(xq, K)[1], gt)
+            rows.append((f"FAISS IndexPQFastScan m={m}", len(xq) / t, r))
+        except Exception as exc:  # noqa: BLE001
+            print(f"  PQFastScan m={m} failed: {str(exc)[:60]}")
+
+    for nlist, nprobe in ((256, 32), (256, 128)):
+        try:
+            quant = faiss.IndexFlatIP(d)
+            ivf = faiss.IndexIVFPQFastScan(quant, d, nlist, d // 4, 4,
+                                           faiss.METRIC_INNER_PRODUCT)
+            ivf.train(xb)
+            ivf.add(xb)
+            ivf.nprobe = nprobe
+            t = timed(lambda: ivf.search(xq, K), reps=3)
+            r = recall(ivf.search(xq, K)[1], gt)
+            rows.append((f"FAISS IVFPQFastScan {nlist}/{nprobe}",
+                         len(xq) / t, r))
+        except Exception as exc:  # noqa: BLE001
+            print(f"  IVFPQFastScan {nlist}/{nprobe} failed: {str(exc)[:50]}")
+
     idx = Sq8Index(xb)
     codes, scales = idx.quantize_queries(xq)
     lib.sq8_set_num_threads(1)   # match the single-threaded FAISS above
@@ -142,6 +174,27 @@ def main() -> None:
     #   vs exact      : sq8 vs FAISS float32 exact search. Different claim,
     #                   and the recall gap there is a genuine accuracy cost.
     # Collapsing them into one number would flatter whichever suits the story.
+    # Matched recall is the only fair comparison across compression schemes:
+    # PQ can always be made faster by lowering its recall, so a raw QPS
+    # ranking across different accuracy levels is meaningless.
+    LO, HI = 0.970, 0.990
+    best_sq8_tmp = max((r for r in rows if r[0].startswith("sq8")),
+                       key=lambda r: r[1], default=None)
+    band = [r for r in rows if LO <= r[2] <= HI]
+    print(f"\n  --- matched recall band {LO} to {HI} ---")
+    if band:
+        for label, qps, rec in sorted(band, key=lambda r: -r[1]):
+            print(f"    {label:<38} {qps:>10,.1f} QPS  recall {rec:.3f}")
+        champ = max(band, key=lambda r: r[1])
+        if best_sq8_tmp and champ[0] != best_sq8_tmp[0]:
+            print(f"\n    >> sq8 DOES NOT WIN at matched recall: "
+                  f"{champ[0]} is {champ[1] / best_sq8_tmp[1]:.2f}x faster.")
+            print("    >> Rescope the README headline before submitting.")
+        else:
+            print(f"\n    >> sq8 is fastest at matched recall.")
+    else:
+        print("    nothing in band; widen the sweep")
+
     VALID = 0.5
     int8_rows = [r for r in rows
                  if r[0].startswith("FAISS Q") and r[2] > VALID]
