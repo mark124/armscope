@@ -79,7 +79,7 @@ jobs:
       # trustworthy when measured here, against published ground truth.
       - name: Head to head on real embeddings
         run: |
-          pip install --quiet h5py
+          pip install --quiet sentence-transformers scikit-learn
           python bench/bench_real_embeddings.py | tee sq8_real.txt
 
       - uses: actions/upload-artifact@v4
