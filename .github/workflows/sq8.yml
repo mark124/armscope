@@ -1,0 +1,81 @@
+name: sq8
+
+# Correctness first, then speed. The benchmark job depends on the test job,
+# so no timing is ever published from a build that fails its correctness gate.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "sq8/**"
+      - ".github/workflows/sq8.yml"
+
+jobs:
+  correctness:
+    name: correctness
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host
+        run: |
+          python3 tools/cpuid.py
+          gcc --version | head -1
+
+      - name: Build
+        working-directory: sq8
+        run: |
+          gcc -O2 -Wall -Wextra -march=armv8.2-a+dotprod+i8mm \
+            -o test_sq8 test_sq8.c sq8.c -lm
+          echo built
+
+      - name: Confirm the binary contains the instructions under test
+        run: |
+          python3 -m pip install --break-system-packages --quiet capstone pyelftools
+          python3 - <<'PY'
+          import pathlib, sys
+          sys.path.insert(0, "armscope")
+          import scan
+          r = scan.scan_elf(pathlib.Path("sq8/test_sq8").read_bytes())
+          print(f"test_sq8: {r['instructions']:,} insns  coverage {r['coverage']*100:.1f}%")
+          print(f"features: {r['features']}")
+          assert r["features"].get("dotprod", 0) > 0, "no SDOT in binary"
+          assert r["features"].get("i8mm", 0) > 0, "no SMMLA in binary"
+          print("SDOT and SMMLA both present")
+          PY
+
+      - name: Run correctness gate
+        working-directory: sq8
+        run: ./test_sq8
+
+  benchmark:
+    name: benchmark vs FAISS
+    needs: correctness
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build shared library
+        working-directory: sq8
+        run: |
+          gcc -O3 -fPIC -shared -march=armv8.2-a+dotprod+i8mm \
+            -o libsq8.so sq8.c -lm
+          ls -l libsq8.so
+
+      - name: Install FAISS
+        run: pip install --quiet faiss-cpu numpy
+
+      - name: Head to head, with recall
+        run: python bench/bench_vs_faiss.py | tee sq8_vs_faiss.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sq8-benchmark
+          path: sq8_vs_faiss.txt
