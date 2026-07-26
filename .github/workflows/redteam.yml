@@ -1,4 +1,4 @@
-name: red team
+﻿name: red team
 
 # Deliberately tries to make sq8's advantage disappear:
 #   - every FAISS int8 mode, in case the original baseline was a strawman
@@ -29,11 +29,19 @@ jobs:
       - name: Build sq8
         working-directory: sq8
         run: |
-          gcc -O3 -fPIC -shared -march=armv8.2-a+dotprod+i8mm \
+          gcc -O3 -fPIC -shared -fopenmp -march=armv8.2-a+dotprod+i8mm \
             -o libsq8.so sq8.c -lm
 
-      - name: Install rivals
-        run: pip install --quiet faiss-cpu numpy simsimd
+      # The PyPI simsimd wheel reports neon_i8=False on this CPU, meaning its
+      # Arm int8 kernels are not compiled in and it falls back to serial.
+      # Building from source with native flags gives it a fair fight.
+      - name: Install rivals, with SimSIMD built for this CPU
+        run: |
+          pip install --quiet faiss-cpu numpy
+          CFLAGS="-march=armv8.2-a+dotprod+i8mm -O3" \
+            pip install --quiet --no-binary simsimd simsimd \
+            || pip install --quiet simsimd
+          python -c "import simsimd; print('caps:', simsimd.get_capabilities())"
 
       - name: What Arm kernels does SimSIMD actually ship
         run: |
@@ -60,3 +68,4 @@ jobs:
         with:
           name: redteam
           path: redteam.txt
+

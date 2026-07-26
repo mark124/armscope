@@ -86,6 +86,10 @@ sq8_kernel_t sq8_search_ip(const sq8_index_t *idx,
                            int64_t nq, int k,
                            int64_t *out_ids, float *out_scores);
 
+/* Thread count for search. 0 leaves it to OpenMP's default. Set to 1 to
+ * compare like for like against a single-threaded baseline. */
+void sq8_set_num_threads(int t);
+
 /* Raw int32 dot product of two padded int8 vectors. Exposed for tests and
  * for the kernel microbenchmark. */
 int32_t sq8_dot(const int8_t *a, const int8_t *b, int dpad);

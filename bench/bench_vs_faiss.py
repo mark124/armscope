@@ -33,6 +33,7 @@ lib.sq8_kernel_name.restype = ctypes.c_char_p
 lib.sq8_kernel_name.argtypes = [ctypes.c_int]
 lib.sq8_best_kernel.restype = ctypes.c_int
 lib.sq8_force_kernel.argtypes = [ctypes.c_int]
+lib.sq8_set_num_threads.argtypes = [ctypes.c_int]
 
 KERNELS = {"scalar": 0, "neon": 1, "sdot": 2, "smmla": 3}
 
@@ -93,7 +94,10 @@ def recall(got: np.ndarray, exact: np.ndarray) -> float:
 
 def main() -> None:
     import faiss
+    # Both sides pinned to one thread. sq8 is now OpenMP-parallel too, so this
+    # is a deliberate choice to isolate the kernel rather than a limitation.
     faiss.omp_set_num_threads(1)
+    lib.sq8_set_num_threads(1)
 
     print(f"faiss {faiss.__version__}  compile options: {faiss.get_compile_options()}")
     auto = lib.sq8_best_kernel()

@@ -4,6 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
+
 #if defined(__aarch64__)
 #include <arm_neon.h>
 #include <sys/auxv.h>
@@ -306,85 +310,118 @@ static int cand_desc(const void *a, const void *b) {
  * Search
  * ------------------------------------------------------------------ */
 
+static void emit(cand_t *h, int cnt, int k, int64_t qi,
+                 int64_t *out_ids, float *out_scores) {
+    qsort(h, cnt, sizeof(cand_t), cand_desc);
+    for (int j = 0; j < k; j++) {
+        out_ids[qi * k + j] = j < cnt ? h[j].id : -1;
+        out_scores[qi * k + j] = j < cnt ? h[j].score : -INFINITY;
+    }
+}
+
+/* One query against the whole index. */
+static void search_one(const sq8_index_t *idx, sq8_dotfn dot,
+                       const int8_t *q, float qs, int k, int64_t qi,
+                       cand_t *heap, int64_t *out_ids, float *out_scores) {
+    const int dpad = idx->dpad;
+    int cnt = 0;
+    for (int64_t vi = 0; vi < idx->n; vi++) {
+        const int8_t *v = idx->codes + vi * dpad;
+        heap_push(heap, &cnt, k,
+                  (float)dot(q, v, dpad) * qs * idx->scales[vi], vi);
+    }
+    emit(heap, cnt, k, qi, out_ids, out_scores);
+}
+
+#if defined(__aarch64__) && defined(__ARM_FEATURE_MATMUL_INT8)
+/* Two queries against two database vectors at a time, which is the shape
+ * SMMLA actually accelerates. */
+static void search_pair(const sq8_index_t *idx, sq8_dotfn dot,
+                        const int8_t *qcodes, const float *qscales,
+                        int64_t qi, int k, cand_t *heap,
+                        int64_t *out_ids, float *out_scores) {
+    const int dpad = idx->dpad;
+    const int64_t n = idx->n;
+    const int8_t *q0 = qcodes + qi * dpad;
+    const int8_t *q1 = qcodes + (qi + 1) * dpad;
+    const float s0 = qscales[qi], s1 = qscales[qi + 1];
+    cand_t *h0 = heap, *h1 = heap + k;
+    int c0 = 0, c1 = 0;
+    int32_t out[4];
+
+    int64_t vi = 0;
+    for (; vi + 1 < n; vi += 2) {
+        const int8_t *v0 = idx->codes + vi * dpad;
+        const int8_t *v1 = idx->codes + (vi + 1) * dpad;
+        dot2x2_smmla(q0, q1, v0, v1, dpad, out);
+        heap_push(h0, &c0, k, (float)out[0] * s0 * idx->scales[vi], vi);
+        heap_push(h0, &c0, k, (float)out[1] * s0 * idx->scales[vi + 1], vi + 1);
+        heap_push(h1, &c1, k, (float)out[2] * s1 * idx->scales[vi], vi);
+        heap_push(h1, &c1, k, (float)out[3] * s1 * idx->scales[vi + 1], vi + 1);
+    }
+    for (; vi < n; vi++) {
+        const int8_t *v = idx->codes + vi * dpad;
+        heap_push(h0, &c0, k, (float)dot(q0, v, dpad) * s0 * idx->scales[vi], vi);
+        heap_push(h1, &c1, k, (float)dot(q1, v, dpad) * s1 * idx->scales[vi], vi);
+    }
+    emit(h0, c0, k, qi, out_ids, out_scores);
+    emit(h1, c1, k, qi + 1, out_ids, out_scores);
+}
+#endif
+
+/* Threads are set from the environment so the benchmark can pin this to one
+ * core and compare like for like against a single-threaded FAISS, then let
+ * both use the whole machine. Parallelism is over queries, which is also how
+ * FAISS parallelises a batched search. */
+static int g_threads = 0;   /* 0 means use whatever OpenMP defaults to */
+
+void sq8_set_num_threads(int t) { g_threads = t; }
+
 sq8_kernel_t sq8_search_ip(const sq8_index_t *idx,
                            const int8_t *qcodes, const float *qscales,
                            int64_t nq, int k,
                            int64_t *out_ids, float *out_scores) {
-    sq8_kernel_t kern = sq8_best_kernel();
+    const sq8_kernel_t kern = sq8_best_kernel();
     const sq8_dotfn dot = resolve_dot(kern);   /* resolved once, not per vector */
-    const int dpad = idx->dpad;
-    const int64_t n = idx->n;
 
-    /* Two heaps' worth: the SMMLA path processes a pair of queries at once
-     * and needs one heap each. Allocated once rather than per query pair. */
-    cand_t *heap = malloc((size_t)2 * k * sizeof(cand_t));
-    if (!heap) return kern;
+#if defined(_OPENMP)
+    if (g_threads > 0) omp_set_num_threads(g_threads);
+#endif
 
 #if defined(__aarch64__) && defined(__ARM_FEATURE_MATMUL_INT8)
     if (kern == SQ8_KERNEL_SMMLA && nq >= 2) {
-        /* Two queries and two database vectors per SMMLA accumulator. Odd
-         * counts fall through to the pairwise path below. */
-        for (int64_t qi = 0; qi + 1 < nq; qi += 2) {
-            const int8_t *q0 = qcodes + qi * dpad;
-            const int8_t *q1 = qcodes + (qi + 1) * dpad;
-            int c0 = 0, c1 = 0;
-            cand_t *h0 = heap, *h1 = heap + k;
-            float s0 = qscales[qi], s1 = qscales[qi + 1];
-            int32_t out[4];
-
-            int64_t vi = 0;
-            for (; vi + 1 < n; vi += 2) {
-                const int8_t *v0 = idx->codes + vi * dpad;
-                const int8_t *v1 = idx->codes + (vi + 1) * dpad;
-                dot2x2_smmla(q0, q1, v0, v1, dpad, out);
-                heap_push(h0, &c0, k, (float)out[0] * s0 * idx->scales[vi], vi);
-                heap_push(h0, &c0, k, (float)out[1] * s0 * idx->scales[vi + 1], vi + 1);
-                heap_push(h1, &c1, k, (float)out[2] * s1 * idx->scales[vi], vi);
-                heap_push(h1, &c1, k, (float)out[3] * s1 * idx->scales[vi + 1], vi + 1);
-            }
-            for (; vi < n; vi++) {
-                const int8_t *v = idx->codes + vi * dpad;
-                heap_push(h0, &c0, k, (float)dot(q0, v, dpad) * s0 * idx->scales[vi], vi);
-                heap_push(h1, &c1, k, (float)dot(q1, v, dpad) * s1 * idx->scales[vi], vi);
-            }
-
-            qsort(h0, c0, sizeof(cand_t), cand_desc);
-            qsort(h1, c1, sizeof(cand_t), cand_desc);
-            for (int j = 0; j < k; j++) {
-                out_ids[qi * k + j] = j < c0 ? h0[j].id : -1;
-                out_scores[qi * k + j] = j < c0 ? h0[j].score : -INFINITY;
-                out_ids[(qi + 1) * k + j] = j < c1 ? h1[j].id : -1;
-                out_scores[(qi + 1) * k + j] = j < c1 ? h1[j].score : -INFINITY;
+        const int64_t npairs = nq / 2;
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(dynamic)
+#endif
+        for (int64_t p = 0; p < npairs; p++) {
+            cand_t *h = malloc((size_t)2 * k * sizeof(cand_t));
+            if (!h) continue;
+            search_pair(idx, dot, qcodes, qscales, p * 2, k, h,
+                        out_ids, out_scores);
+            free(h);
+        }
+        if (nq % 2) {
+            cand_t *h = malloc((size_t)k * sizeof(cand_t));
+            if (h) {
+                search_one(idx, dot, qcodes + (nq - 1) * idx->dpad,
+                           qscales[nq - 1], k, nq - 1, h, out_ids, out_scores);
+                free(h);
             }
         }
-        if (nq % 2 == 0) { free(heap); return kern; }
-        /* fall through for the final odd query */
+        return kern;
     }
 #endif
 
-    int64_t start = 0;
-#if defined(__aarch64__) && defined(__ARM_FEATURE_MATMUL_INT8)
-    if (kern == SQ8_KERNEL_SMMLA && nq >= 2 && nq % 2 == 1) start = nq - 1;
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(dynamic)
 #endif
-
-    for (int64_t qi = start; qi < nq; qi++) {
-        const int8_t *q = qcodes + qi * dpad;
-        float qs = qscales[qi];
-        int cnt = 0;
-
-        for (int64_t vi = 0; vi < n; vi++) {
-            const int8_t *v = idx->codes + vi * dpad;
-            heap_push(heap, &cnt, k,
-                      (float)dot(q, v, dpad) * qs * idx->scales[vi], vi);
-        }
-
-        qsort(heap, cnt, sizeof(cand_t), cand_desc);
-        for (int j = 0; j < k; j++) {
-            out_ids[qi * k + j] = j < cnt ? heap[j].id : -1;
-            out_scores[qi * k + j] = j < cnt ? heap[j].score : -INFINITY;
-        }
+    for (int64_t qi = 0; qi < nq; qi++) {
+        cand_t *h = malloc((size_t)k * sizeof(cand_t));
+        if (!h) continue;
+        search_one(idx, dot, qcodes + qi * idx->dpad, qscales[qi], k, qi, h,
+                   out_ids, out_scores);
+        free(h);
     }
-
-    free(heap);
     return kern;
 }

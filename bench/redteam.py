@@ -107,32 +107,50 @@ def main() -> None:
     try:
         import simsimd
 
+        caps = getattr(simsimd, "get_capabilities", lambda: {})()
         print(f"  simsimd {getattr(simsimd, '__version__', '?')}")
-        print(f"  capabilities: {getattr(simsimd, 'get_capabilities', lambda: '?')()}")
+        print(f"  capabilities: {caps}")
+        # If neon_i8 is off, this build cannot use Arm int8 kernels at all and
+        # any comparison against it is meaningless. Say so rather than quietly
+        # reporting a number that flatters sq8.
+        i8_ok = bool(caps.get("neon_i8") or caps.get("sve_i8"))
+        if not i8_ok:
+            print("  >> WARNING: neon_i8 and sve_i8 are BOTH DISABLED in this")
+            print("     build. It is running a serial fallback, so it is NOT")
+            print("     a valid state-of-the-art comparison.")
 
-        # Quantize both sides the same way sq8 does, then let SimSIMD do the
-        # whole query-by-database matrix. This isolates the kernel.
-        sb = (np.clip(np.round(xb / np.abs(xb).max(axis=1, keepdims=True) * 127),
-                      -127, 127)).astype(np.int8)
-        sq = (np.clip(np.round(xq / np.abs(xq).max(axis=1, keepdims=True) * 127),
-                      -127, 127)).astype(np.int8)
+        # Same quantization sq8 uses, so the kernel is the only difference.
+        bscale = np.abs(xb).max(axis=1, keepdims=True)
+        qscale = np.abs(xq).max(axis=1, keepdims=True)
+        sb = np.clip(np.round(xb / bscale * 127), -127, 127).astype(np.int8)
+        sq = np.clip(np.round(xq / qscale * 127), -127, 127).astype(np.int8)
+
+        # Verify the metric orientation against numpy before trusting recall.
+        probe = np.asarray(simsimd.cdist(sq[:2], sb[:64], metric="dot",
+                                         dtype="int8"), dtype=np.float64)
+        ref = sq[:2].astype(np.int32) @ sb[:64].astype(np.int32).T
+        corr = np.corrcoef(probe.ravel(), ref.ravel())[0, 1]
+        sign = 1.0 if corr > 0 else -1.0
+        print(f"  metric orientation vs numpy: corr={corr:+.3f} "
+              f"-> ranking by {'+' if sign > 0 else '-'}value")
 
         def simsimd_search():
-            dists = simsimd.cdist(sq, sb, metric="dot", dtype="int8")
-            return np.asarray(dists)
+            return np.asarray(simsimd.cdist(sq, sb, metric="dot", dtype="int8"))
 
         t = timed(simsimd_search, reps=3)
-        dists = simsimd_search()
-        # cdist returns distances; for dot it is the negated/raw product
-        order = np.argsort(-np.asarray(dists), axis=1)[:, :K]
+        dists = sign * simsimd_search().astype(np.float64)
+        # per-vector scales must be reapplied, exactly as sq8 does
+        dists = dists * bscale.reshape(1, -1) * qscale.reshape(-1, 1)
+        order = np.argsort(-dists, axis=1)[:, :K]
         r = recall(order, gt)
         qps = nq / t
+        note = "state of the art" if i8_ok else "INVALID: i8 kernels disabled"
         print(f"  {'SimSIMD cdist int8':<26} {qps:>10,.1f} QPS   recall {r:.3f}")
-        results.append(("SimSIMD cdist int8", qps, r, "state of the art"))
+        results.append(("SimSIMD cdist int8", qps, r, note))
     except ImportError:
         print("  simsimd not installed, skipping")
     except Exception as exc:  # noqa: BLE001
-        print(f"  simsimd failed: {str(exc)[:120]}")
+        print(f"  simsimd failed: {str(exc)[:160]}")
 
     # ---- sq8 itself ---------------------------------------------------------
     section("3. SQ8")
@@ -148,30 +166,53 @@ def main() -> None:
         results.append((f"sq8 [{kname}]", qps, r, ""))
     lib.sq8_force_kernel(-1)
 
-    # ---- 4. multi-threaded FAISS -------------------------------------------
-    section(f"4. WHAT IF FAISS USES ALL {cores} CORES?  (sq8 is single threaded)")
+    # ---- 4. both sides given the whole machine -----------------------------
+    section(f"4. BOTH SIDES ON ALL {cores} CORES")
 
     faiss.omp_set_num_threads(cores)
     best_faiss_mt = 0.0
     for name, qt in modes:
         try:
             if "direct" in name:
-                continue  # scaling handled above; keep this simple and honest
+                lo, hi = (0, 255) if not name.endswith("signed") else (-128, 127)
+                scale = np.abs(xb).max()
+                xb_m = np.clip(np.round(xb / scale * (hi - lo) / 2 + (hi + lo) / 2),
+                               lo, hi).astype(np.float32)
+                xq_m = np.clip(np.round(xq / scale * (hi - lo) / 2 + (hi + lo) / 2),
+                               lo, hi).astype(np.float32)
+            else:
+                xb_m, xq_m = xb, xq
             idx_mt = faiss.IndexScalarQuantizer(d, qt, faiss.METRIC_INNER_PRODUCT)
-            idx_mt.train(xb)
-            idx_mt.add(xb)
-            t = timed(lambda: idx_mt.search(xq, K), reps=3)
+            idx_mt.train(xb_m)
+            idx_mt.add(xb_m)
+            t = timed(lambda: idx_mt.search(xq_m, K), reps=3)
+            r = recall(idx_mt.search(xq_m, K)[1], gt)
             qps = nq / t
-            best_faiss_mt = max(best_faiss_mt, qps)
-            print(f"  {name + ' x' + str(cores):<26} {qps:>10,.1f} QPS")
+            # A mode with broken recall is not a competitor, so it must not
+            # be allowed to set the bar sq8 is measured against.
+            if r > 0.5:
+                best_faiss_mt = max(best_faiss_mt, qps)
+            print(f"  {name + ' x' + str(cores):<28} {qps:>10,.1f} QPS  "
+                  f"recall {r:.3f}{'' if r > 0.5 else '  (excluded, broken)'}")
         except Exception as exc:  # noqa: BLE001
-            print(f"  {name:<26} failed: {str(exc)[:60]}")
+            print(f"  {name:<28} failed: {str(exc)[:60]}")
 
     flat_mt = faiss.IndexFlatIP(d)
     flat_mt.add(xb)
     t = timed(lambda: flat_mt.search(xq, K), reps=3)
-    print(f"  {'IndexFlatIP x' + str(cores):<26} {nq / t:>10,.1f} QPS")
+    print(f"  {'IndexFlatIP x' + str(cores):<28} {nq / t:>10,.1f} QPS  recall 1.000")
     best_faiss_mt = max(best_faiss_mt, nq / t)
+
+    lib.sq8_set_num_threads(cores)
+    best_sq8_mt = 0.0
+    for kname, kid in KERNELS.items():
+        lib.sq8_force_kernel(kid)
+        t = timed(lambda: idx.search(codes, scales, nq, K), reps=3)
+        qps = nq / t
+        best_sq8_mt = max(best_sq8_mt, qps)
+        print(f"  {'sq8 [' + kname + '] x' + str(cores):<28} {qps:>10,.1f} QPS")
+    lib.sq8_force_kernel(-1)
+    lib.sq8_set_num_threads(1)
 
     # ---- verdict ------------------------------------------------------------
     section("VERDICT")
@@ -181,20 +222,35 @@ def main() -> None:
     for label, qps, r, note in results:
         print(f"  {label:<28} {qps:>16,.1f} {r:>11.3f}  {note}")
 
-    sq8_best = max((q for l, q, _, _ in results if l.startswith("sq8")), default=0)
-    faiss_best = max((q for l, q, _, _ in results if l.startswith("FAISS")), default=0)
-    sota = max((q for l, q, _, _ in results if "SimSIMD" in l), default=0)
+    # A mode that returns garbage is not a competitor. Recall 0.000 means the
+    # index is not answering the question, so it cannot set the bar.
+    VALID = 0.5
+    sq8_best = max((q for l, q, r, _ in results
+                    if l.startswith("sq8") and r > VALID), default=0)
+    faiss_best, faiss_best_name, faiss_best_recall = 0.0, "", 0.0
+    for l, q, r, _ in results:
+        if l.startswith("FAISS") and r > VALID and q > faiss_best:
+            faiss_best, faiss_best_name, faiss_best_recall = q, l, r
+    sota = max((q for l, q, r, _ in results if "SimSIMD" in l and r > VALID),
+               default=0)
 
-    print(f"\n  sq8 best (1 thread)          {sq8_best:>12,.1f} QPS")
-    print(f"  best FAISS mode (1 thread)   {faiss_best:>12,.1f} QPS  "
-          f"-> {sq8_best / faiss_best:.1f}x" if faiss_best else "")
+    print(f"\n  sq8 best, 1 thread            {sq8_best:>12,.1f} QPS")
+    if faiss_best:
+        print(f"  best VALID FAISS, 1 thread    {faiss_best:>12,.1f} QPS  "
+              f"({faiss_best_name}, recall {faiss_best_recall:.3f})")
+        print(f"  -> honest single-thread speedup: {sq8_best / faiss_best:.1f}x")
     if sota:
-        print(f"  SimSIMD (1 thread)           {sota:>12,.1f} QPS  "
-              f"-> sq8 is {sq8_best / sota:.2f}x of state of the art")
-    if best_faiss_mt:
-        print(f"  best FAISS on {cores} cores        {best_faiss_mt:>12,.1f} QPS  "
-              f"-> sq8 single-thread is {sq8_best / best_faiss_mt:.2f}x of that")
-        print("\n  The last line is the number a sceptical judge will compute.")
+        print(f"  SimSIMD, 1 thread             {sota:>12,.1f} QPS  "
+              f"-> sq8 is {sq8_best / sota:.2f}x of it")
+    if best_faiss_mt and best_sq8_mt:
+        print(f"\n  With all {cores} cores:")
+        print(f"    best FAISS                  {best_faiss_mt:>12,.1f} QPS")
+        print(f"    best sq8                    {best_sq8_mt:>12,.1f} QPS")
+        print(f"  -> honest multi-thread speedup: "
+              f"{best_sq8_mt / best_faiss_mt:.1f}x")
+        print("\n  These two speedups are the only numbers that should appear")
+        print("  in the write-up. Anything larger came from a broken or")
+        print("  hobbled baseline.")
 
 
 if __name__ == "__main__":

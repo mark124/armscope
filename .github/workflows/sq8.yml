@@ -1,4 +1,4 @@
-name: sq8
+﻿name: sq8
 
 # Correctness first, then speed. The benchmark job depends on the test job,
 # so no timing is ever published from a build that fails its correctness gate.
@@ -26,7 +26,7 @@ jobs:
       - name: Build
         working-directory: sq8
         run: |
-          gcc -O2 -Wall -Wextra -march=armv8.2-a+dotprod+i8mm \
+          gcc -O2 -Wall -Wextra -fopenmp -march=armv8.2-a+dotprod+i8mm \
             -o test_sq8 test_sq8.c sq8.c -lm
           echo built
 
@@ -64,7 +64,7 @@ jobs:
       - name: Build shared library
         working-directory: sq8
         run: |
-          gcc -O3 -fPIC -shared -march=armv8.2-a+dotprod+i8mm \
+          gcc -O3 -fPIC -shared -fopenmp -march=armv8.2-a+dotprod+i8mm \
             -o libsq8.so sq8.c -lm
           ls -l libsq8.so
 
@@ -89,3 +89,4 @@ jobs:
           path: |
             sq8_vs_faiss.txt
             sq8_real.txt
+
