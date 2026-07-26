@@ -1,4 +1,4 @@
-name: vector search headroom
+﻿name: vector search headroom
 
 # Is there real unclaimed performance in int8 vector-search kernels on Arm?
 #
@@ -64,6 +64,9 @@ jobs:
           pip install --quiet faiss-cpu numpy
           python experiments/faiss_baseline.py | tee faiss_baseline.txt
 
+      - name: Split the gap - kernel versus BLAS batching
+        run: python experiments/faiss_attribution.py | tee faiss_attribution.txt
+
       - name: What is inside the FAISS that just ran
         run: |
           python - <<'PY'
@@ -92,4 +95,6 @@ jobs:
           path: |
             headroom.txt
             faiss_baseline.txt
+            faiss_attribution.txt
             cpuid.json
+
