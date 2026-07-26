@@ -63,9 +63,18 @@ jobs:
       - name: Adversarial benchmark
         run: python bench/redteam.py | tee redteam.txt
 
+      # The comparison most likely to invalidate this project's headline.
+      # PQ fast-scan has had NEON SIMD since FAISS PR #1815 and is what
+      # production actually uses for compressed CPU search.
+      - name: PQ fast-scan at matched recall
+        run: python bench/pq_fastscan.py | tee pq_fastscan.txt
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: redteam
-          path: redteam.txt
+          path: |
+            redteam.txt
+            pq_fastscan.txt
+
 

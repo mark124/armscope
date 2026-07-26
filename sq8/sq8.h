@@ -3,8 +3,13 @@
  * Why this exists. FAISS's IndexScalarQuantizer stores vectors as int8 but
  * keeps queries in float32, so its distance computation dequantizes every
  * stored component with a per-dimension scale and offset. That operation
- * cannot use Arm's int8 instructions, and measurement on Neoverse N2 puts it
- * at 15.0 Mdot/s where an i8mm kernel reaches 331.4 Mdot/s, a 22x gap.
+ * cannot use Arm's int8 instructions: libfaiss.so contains 1.8 million
+ * instructions and exactly zero SDOT or SMMLA, at 100% scan coverage.
+ *
+ * Scope this claim carefully. It is about the SCALAR QUANTIZER path only.
+ * FAISS's PQ fast-scan indexes have had NEON SIMD since PR #1815 and are a
+ * separate, faster path. See bench/pq_fastscan.py for the matched-recall
+ * comparison against them.
  *
  * sq8 quantizes both sides. That makes the inner loop a pure int8 dot
  * product, which is exactly the shape SDOT and SMMLA were added to Armv8.2
