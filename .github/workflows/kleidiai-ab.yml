@@ -1,0 +1,129 @@
+name: kleidiai a/b
+
+# What does llama.cpp's default build cost you on Arm?
+#
+# ggml/CMakeLists.txt ships:
+#     option(GGML_CPU_KLEIDIAI "ggml: use KleidiAI optimized kernels if applicable" OFF)
+#
+# GGML_NATIVE defaults ON, so the compiler does enable i8mm/dotprod for the
+# host. But KleidiAI, Arm's own hand-tuned micro-kernel library, is switched
+# off unless you know to ask for it. This measures what that default costs on
+# an i8mm-capable CPU, using the quantization KleidiAI actually targets (Q4_0).
+#
+# Runs on GitHub's free Arm runners (Neoverse N2, i8mm + dotprod + bf16).
+on:
+  workflow_dispatch:
+    inputs:
+      llama_ref:
+        description: "llama.cpp git ref to build"
+        default: "master"
+      model_repo:
+        description: "HuggingFace GGUF repo"
+        default: "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+      model_file:
+        description: "GGUF filename"
+        default: "qwen2.5-0.5b-instruct-q4_0.gguf"
+
+jobs:
+  ab:
+    name: default build vs KleidiAI build
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: armscope
+
+      - name: Host facts
+        run: |
+          nproc
+          python3 armscope/tools/cpuid.py
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake build-essential libcurl4-openssl-dev
+          python3 -m pip install --break-system-packages --quiet capstone pyelftools
+
+      - name: Fetch llama.cpp
+        run: |
+          git clone --depth 1 --branch "${{ inputs.llama_ref }}" \
+            https://github.com/ggml-org/llama.cpp.git llama.cpp || \
+            git clone https://github.com/ggml-org/llama.cpp.git llama.cpp
+          cd llama.cpp
+          echo "LLAMA_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          echo "pinned at $(git rev-parse HEAD)"
+
+      # Build A: exactly what you get by running cmake with no extra flags.
+      - name: Build A (defaults)
+        run: |
+          cd llama.cpp
+          cmake -B build-default -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF
+          cmake --build build-default --config Release -j"$(nproc)" \
+            --target llama-bench 2>&1 | tail -5
+
+      # Build B: the same thing with Arm's own kernels switched on.
+      - name: Build B (KleidiAI)
+        run: |
+          cd llama.cpp
+          cmake -B build-kleidi -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF \
+            -DGGML_CPU_KLEIDIAI=ON
+          cmake --build build-kleidi --config Release -j"$(nproc)" \
+            --target llama-bench 2>&1 | tail -5
+
+      - name: What is physically different between the two builds
+        run: |
+          python3 - <<'PY'
+          import pathlib, sys, glob
+          sys.path.insert(0, "armscope/armscope")
+          import scan
+
+          for label, root in (("A default", "llama.cpp/build-default"),
+                              ("B kleidiai", "llama.cpp/build-kleidi")):
+              print(f"\n=== {label} ===")
+              objs = glob.glob(f"{root}/**/*.so", recursive=True)
+              objs += glob.glob(f"{root}/bin/llama-bench", recursive=True)
+              for obj in sorted(set(objs)):
+                  data = pathlib.Path(obj).read_bytes()
+                  r = scan.scan_elf(data)
+                  if not r or r["instructions"] < 1000:
+                      continue
+                  kai = data.count(b"kai_")
+                  print(f"  {obj.split('/')[-1]:<28} "
+                        f"{r['instructions']:>10,} insns  "
+                        f"cov {r['coverage']*100:5.1f}%  "
+                        f"{r['features']}  kai_syms={kai}")
+          PY
+
+      - name: Get the model
+        run: |
+          curl -sSL -o model.gguf \
+            "https://huggingface.co/${{ inputs.model_repo }}/resolve/main/${{ inputs.model_file }}"
+          ls -lh model.gguf
+
+      - name: Benchmark A (defaults)
+        run: |
+          ./llama.cpp/build-default/bin/llama-bench -m model.gguf \
+            -p 512 -n 128 -t "$(nproc)" -r 5 2>&1 | tee bench-default.txt
+
+      - name: Benchmark B (KleidiAI)
+        run: |
+          ./llama.cpp/build-kleidi/bin/llama-bench -m model.gguf \
+            -p 512 -n 128 -t "$(nproc)" -r 5 2>&1 | tee bench-kleidi.txt
+
+      - name: Verdict
+        run: |
+          echo "llama.cpp $LLAMA_SHA"
+          echo "--- A: cmake defaults ---"
+          cat bench-default.txt
+          echo "--- B: -DGGML_CPU_KLEIDIAI=ON ---"
+          cat bench-kleidi.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kleidiai-ab
+          path: |
+            bench-default.txt
+            bench-kleidi.txt
+            cpuid.json
