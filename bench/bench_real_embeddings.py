@@ -131,12 +131,18 @@ def main() -> None:
 
     sq8_recall = rows[-1][2]
     faiss_recall = incumbent[2]
-    print(f"\n  FAISS SQ8 recall {faiss_recall:.3f}   sq8 recall {sq8_recall:.3f}")
-    if sq8_recall < faiss_recall - 0.01:
-        print("  >> sq8 loses measurable recall on real data. Quantizing the")
-        print("     query side costs more here than it does on random vectors.")
-    else:
-        print("  >> sq8 holds its recall on real embeddings.")
+    exact_recall = rows[0][2]
+    delta_pp = (faiss_recall - sq8_recall) * 100.0
+
+    print(f"\n  exact float32      recall {exact_recall:.3f}")
+    print(f"  FAISS SQ8          recall {faiss_recall:.3f}")
+    print(f"  sq8                recall {sq8_recall:.3f}")
+    # State the cost in percentage points rather than hiding it behind a
+    # pass/fail tolerance. Quantizing the query side is what buys the speed,
+    # and whatever it costs belongs next to the speedup, not in a footnote.
+    print(f"\n  >> cost of quantizing the query side: {delta_pp:+.1f} "
+          f"percentage points of recall vs FAISS SQ8")
+    print(f"  >> speed bought with it: {rows[-1][1] / incumbent[1]:.1f}x")
 
 
 if __name__ == "__main__":

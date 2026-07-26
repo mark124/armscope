@@ -12,17 +12,32 @@ per second**, which is slower than FAISS's own exact float32 index.
 which is exactly the shape `SDOT` (Armv8.2 dotprod) and `SMMLA` (Armv8.6 i8mm)
 were added to accelerate.
 
-```
-dim=128, 200,000 vectors, k=10, single threaded, Neoverse N2
+**On real embeddings**, 60,000 text passages encoded with
+`all-MiniLM-L6-v2`, k=10, single threaded, Neoverse N2:
 
-  index                                     QPS   recall@10   vs FAISS SQ8
-  FAISS IndexFlatIP (float32)             269.7       1.000          3.6x
-  FAISS IndexScalarQuantizer               74.8       0.978          1.0x
-  sq8 [neon]                              576.4       0.980          7.7x
-  sq8 [scalar]                            889.2       0.980         11.9x
-  sq8 [sdot]                              994.6       0.980         13.3x
-  sq8 [smmla]                           1,488.8       0.980         19.9x
 ```
+  index                                     QPS   recall@10   vs FAISS SQ8
+  FAISS IndexFlatIP (float32)             305.4       1.000          3.5x
+  FAISS IndexScalarQuantizer               87.1       0.987          1.0x
+  sq8 [neon]                              755.6       0.981          8.7x
+  sq8 [scalar]                          1,258.5       0.981         14.4x
+  sq8 [sdot]                            1,537.2       0.981         17.6x
+  sq8 [smmla]                           2,056.6       0.981         23.6x
+```
+
+**23.6x faster at a cost of 0.6 percentage points of recall** (0.981 against
+0.987). That cost is what quantizing the query side buys the speed with, and it
+is stated here rather than in a footnote.
+
+This benchmark deliberately does not use random vectors. Gaussian noise is the
+friendliest possible input for quantization: isotropic, unclustered, every
+dimension equally informative. Real embeddings are none of those. Measured
+anisotropy (largest over mean singular value) was **4.7 for the real corpus
+against 1.3 for Gaussian noise**, so this is the skewed, clustered structure
+uniform int8 handles worst, and recall survived it.
+
+On synthetic data at dim=128 with 200,000 vectors the same comparison gives
+74.8 QPS for FAISS against 1,488.8 for `sq8 [smmla]`, **19.9x**.
 
 ## Where the speedup actually comes from
 
