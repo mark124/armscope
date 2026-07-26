@@ -37,16 +37,31 @@ const char *sq8_kernel_name(sq8_kernel_t k) {
     }
 }
 
-void sq8_cpu_detect(sq8_cpu_t *out) {
-    memset(out, 0, sizeof(*out));
+/* Capabilities are read from the kernel once and cached. This is not a
+ * micro-optimisation: an earlier version called getauxval from inside the
+ * per-vector dot product, which made the SDOT path measure 2x slower than
+ * plain C and very nearly produced the conclusion that SDOT was not worth
+ * using. The dispatch cost was the whole difference. */
+static sq8_cpu_t g_cpu;
+static int g_cpu_ready = 0;
+
+static void cpu_init(void) {
 #if defined(__aarch64__)
     unsigned long hw = getauxval(AT_HWCAP);
     unsigned long hw2 = getauxval(AT_HWCAP2);
-    out->has_dotprod = (hw & HWCAP_ASIMDDP) != 0;
-    out->has_sve = (hw & HWCAP_SVE) != 0;
-    out->has_i8mm = (hw2 & HWCAP2_I8MM) != 0;
-    out->has_sve2 = (hw2 & HWCAP2_SVE2) != 0;
+    g_cpu.has_dotprod = (hw & HWCAP_ASIMDDP) != 0;
+    g_cpu.has_sve = (hw & HWCAP_SVE) != 0;
+    g_cpu.has_i8mm = (hw2 & HWCAP2_I8MM) != 0;
+    g_cpu.has_sve2 = (hw2 & HWCAP2_SVE2) != 0;
+#else
+    memset(&g_cpu, 0, sizeof(g_cpu));
 #endif
+    g_cpu_ready = 1;
+}
+
+void sq8_cpu_detect(sq8_cpu_t *out) {
+    if (!g_cpu_ready) cpu_init();
+    *out = g_cpu;
 }
 
 sq8_kernel_t sq8_best_kernel(void) {
@@ -54,6 +69,7 @@ sq8_kernel_t sq8_best_kernel(void) {
 #if defined(__aarch64__)
     sq8_cpu_t cpu;
     sq8_cpu_detect(&cpu);
+    (void)cpu;
     /* SMMLA is only compiled in when the toolchain supports i8mm, and only
      * selected when the running CPU reports it. Both conditions matter: a
      * binary built with i8mm will fault on a CPU without it. */
@@ -158,29 +174,33 @@ static void dot2x2_smmla(const int8_t *a0, const int8_t *a1,
 #endif
 #endif /* __aarch64__ */
 
-/* Best single-pair dot product available. SMMLA needs two queries and two
+/* Resolved once per search, never per vector. SMMLA needs two queries and two
  * database vectors to be worth using, so a lone pair falls back to SDOT. */
-static int32_t dot_pair(const int8_t *a, const int8_t *b, int dpad) {
+typedef int32_t (*sq8_dotfn)(const int8_t *, const int8_t *, int);
+
+static sq8_dotfn resolve_dot(sq8_kernel_t kern) {
 #if defined(__aarch64__)
-#if defined(__ARM_FEATURE_DOTPROD)
     sq8_cpu_t cpu;
     sq8_cpu_detect(&cpu);
-    if (cpu.has_dotprod) return dot_sdot(a, b, dpad);
+    switch (kern) {
+        case SQ8_KERNEL_SCALAR: return dot_scalar;
+        case SQ8_KERNEL_NEON:   return dot_neon;
+        case SQ8_KERNEL_SDOT:
+        case SQ8_KERNEL_SMMLA:
+#if defined(__ARM_FEATURE_DOTPROD)
+            if (cpu.has_dotprod) return dot_sdot;
 #endif
-    return dot_neon(a, b, dpad);
+            return dot_neon;
+        default:                return dot_neon;
+    }
 #else
-    return dot_scalar(a, b, dpad);
+    (void)kern;
+    return dot_scalar;
 #endif
 }
 
 int32_t sq8_dot(const int8_t *a, const int8_t *b, int dpad) {
-    switch (sq8_best_kernel()) {
-        case SQ8_KERNEL_SCALAR: return dot_scalar(a, b, dpad);
-#if defined(__aarch64__)
-        case SQ8_KERNEL_NEON:   return dot_neon(a, b, dpad);
-#endif
-        default:                return dot_pair(a, b, dpad);
-    }
+    return resolve_dot(sq8_best_kernel())(a, b, dpad);
 }
 
 /* ------------------------------------------------------------------ *
@@ -291,6 +311,7 @@ sq8_kernel_t sq8_search_ip(const sq8_index_t *idx,
                            int64_t nq, int k,
                            int64_t *out_ids, float *out_scores) {
     sq8_kernel_t kern = sq8_best_kernel();
+    const sq8_dotfn dot = resolve_dot(kern);   /* resolved once, not per vector */
     const int dpad = idx->dpad;
     const int64_t n = idx->n;
 
@@ -323,8 +344,8 @@ sq8_kernel_t sq8_search_ip(const sq8_index_t *idx,
             }
             for (; vi < n; vi++) {
                 const int8_t *v = idx->codes + vi * dpad;
-                heap_push(h0, &c0, k, (float)dot_scalar(q0, v, dpad) * s0 * idx->scales[vi], vi);
-                heap_push(h1, &c1, k, (float)dot_scalar(q1, v, dpad) * s1 * idx->scales[vi], vi);
+                heap_push(h0, &c0, k, (float)dot(q0, v, dpad) * s0 * idx->scales[vi], vi);
+                heap_push(h1, &c1, k, (float)dot(q1, v, dpad) * s1 * idx->scales[vi], vi);
             }
 
             qsort(h0, c0, sizeof(cand_t), cand_desc);
@@ -353,15 +374,8 @@ sq8_kernel_t sq8_search_ip(const sq8_index_t *idx,
 
         for (int64_t vi = 0; vi < n; vi++) {
             const int8_t *v = idx->codes + vi * dpad;
-            int32_t dot;
-            switch (kern) {
-                case SQ8_KERNEL_SCALAR: dot = dot_scalar(q, v, dpad); break;
-#if defined(__aarch64__)
-                case SQ8_KERNEL_NEON:   dot = dot_neon(q, v, dpad); break;
-#endif
-                default:                dot = dot_pair(q, v, dpad); break;
-            }
-            heap_push(heap, &cnt, k, (float)dot * qs * idx->scales[vi], vi);
+            heap_push(heap, &cnt, k,
+                      (float)dot(q, v, dpad) * qs * idx->scales[vi], vi);
         }
 
         qsort(heap, cnt, sizeof(cand_t), cand_desc);
