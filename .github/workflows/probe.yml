@@ -1,0 +1,136 @@
+name: arm probe
+
+# Runs on GitHub's free Arm-hosted runners (Cobalt 100, Neoverse N2, Armv9
+# with SVE2). Free on public repositories, which means anyone can fork this
+# repo and reproduce every number below by pressing "Run workflow".
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  blas-dispatch:
+    name: BLAS runtime dispatch
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy capstone pyelftools
+
+      - name: What is this CPU
+        run: |
+          echo "--- uname ---"
+          uname -a
+          echo "--- lscpu ---"
+          lscpu || true
+          echo "--- nproc ---"
+          nproc
+          python tools/cpuid.py
+
+      - name: What kernel set did OpenBLAS choose
+        run: python tools/blas_dispatch.py
+
+      - name: OpenBLAS verbose load
+        run: OPENBLAS_VERBOSE=2 python -c "import numpy; print(numpy.__version__)"
+
+      - name: Does the choice cost anything (all cores)
+        run: python tools/bench_blas.py --n 2048 --dtype float32 --json bench_mt.json
+
+      - name: Does the choice cost anything (single thread)
+        run: python tools/bench_blas.py --n 1536 --dtype float32 --threads 1 --json bench_st.json
+
+      - name: What is physically in the shipped binary
+        run: |
+          python - <<'PY'
+          import glob, pathlib, sys
+          sys.path.insert(0, "armscope")
+          import scan
+          hits = glob.glob("/opt/hostedtoolcache/Python/*/arm64/lib/python*/site-packages/numpy.libs/*openblas*")
+          hits += glob.glob("**/numpy.libs/*openblas*", recursive=True)
+          if not hits:
+              import numpy
+              root = pathlib.Path(numpy.__file__).parent.parent
+              hits = [str(p) for p in root.glob("numpy.libs/*openblas*")]
+          print("candidates:", hits)
+          for h in hits[:1]:
+              data = pathlib.Path(h).read_bytes()
+              r = scan.scan_elf(data)
+              print(h.split("/")[-1], "->", r["instructions"], "insns",
+                    "coverage", r["coverage"], r["features"])
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: blas-dispatch-results
+          path: |
+            cpuid.json
+            blas_dispatch.json
+            bench_mt.json
+            bench_st.json
+
+  llama-source-build:
+    name: llama.cpp default source build
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake build-essential
+          python -m pip install --upgrade pip
+          pip install capstone pyelftools scikit-build-core
+
+      # llama-cpp-python publishes NO binary wheels on PyPI, source only.
+      # So every Arm user gets whatever the default CMake configuration
+      # produces on their own machine, and cannot inspect it.
+      - name: Build exactly what "pip install llama-cpp-python" gives you
+        run: |
+          time pip install llama-cpp-python --no-binary :all: --verbose 2>&1 | tail -60
+
+      - name: Audit what that default build actually contains
+        run: |
+          python - <<'PY'
+          import glob, pathlib, sys
+          sys.path.insert(0, "armscope")
+          import scan
+          sos = glob.glob("/opt/hostedtoolcache/Python/*/arm64/lib/python*/site-packages/llama_cpp/lib/*.so")
+          sos += glob.glob(str(pathlib.Path.home() / ".venv*/**/llama_cpp/lib/*.so"), recursive=True)
+          if not sos:
+              import llama_cpp
+              root = pathlib.Path(llama_cpp.__file__).parent
+              sos = [str(p) for p in root.rglob("*.so")]
+          print("shared objects found:", sos)
+          for so in sos:
+              data = pathlib.Path(so).read_bytes()
+              r = scan.scan_elf(data)
+              if not r:
+                  continue
+              name = so.split("/")[-1]
+              print(f"\n{name}")
+              print(f"  instructions {r['instructions']:,}  coverage {r['coverage']*100:.1f}%")
+              print(f"  features: {r['features']}")
+              # KleidiAI micro-kernels carry kai_ prefixed symbols
+              blob = data
+              print(f"  KleidiAI symbols present: {b'kai_run_matmul' in blob or b'kai_' in blob}")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: llama-build-audit
+          path: "*.json"
