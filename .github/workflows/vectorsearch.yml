@@ -1,0 +1,95 @@
+name: vector search headroom
+
+# Is there real unclaimed performance in int8 vector-search kernels on Arm?
+#
+# Static scan of libfaiss.so: 1,818,963 instructions at 100% coverage,
+# 544 SVE, ZERO dotprod, ZERO i8mm. Scalar-quantized similarity search is an
+# int8 dot product in a loop, which is exactly what SDOT and SMMLA are for.
+#
+# Two measurements:
+#   1. microbenchmark, correctness-checked, NEON vs SDOT vs SMMLA
+#   2. what FAISS itself actually achieves on the same machine
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/vectorsearch.yml"
+      - "experiments/int8dot.c"
+      - "experiments/faiss_baseline.py"
+
+jobs:
+  headroom:
+    name: int8 kernel headroom
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Host
+        run: |
+          python tools/cpuid.py
+          gcc --version | head -1
+
+      - name: Build microbenchmark
+        run: |
+          gcc -O3 -march=armv8.2-a+dotprod+i8mm \
+            -o int8dot experiments/int8dot.c -lm
+          echo "built"
+
+      - name: Confirm the binary really contains both instruction families
+        run: |
+          pip install --quiet capstone pyelftools
+          python - <<'PY'
+          import pathlib, sys
+          sys.path.insert(0, "armscope")
+          import scan
+          r = scan.scan_elf(pathlib.Path("int8dot").read_bytes())
+          print(f"int8dot: {r['instructions']:,} insns  coverage {r['coverage']*100:.1f}%")
+          print(f"features: {r['features']}")
+          assert r["features"].get("dotprod", 0) > 0, "no SDOT emitted"
+          assert r["features"].get("i8mm", 0) > 0, "no SMMLA emitted"
+          print("both SDOT and SMMLA present, benchmark is testing what it claims")
+          PY
+
+      - name: Measure headroom
+        run: ./int8dot 7 | tee headroom.txt
+
+      - name: What FAISS actually achieves here
+        run: |
+          pip install --quiet faiss-cpu numpy
+          python experiments/faiss_baseline.py | tee faiss_baseline.txt
+
+      - name: What is inside the FAISS that just ran
+        run: |
+          python - <<'PY'
+          import glob, pathlib, sys
+          sys.path.insert(0, "armscope")
+          import scan
+          hits = glob.glob("/opt/hostedtoolcache/Python/*/arm64/lib/python*/site-packages/faiss/*.so")
+          hits += glob.glob("/opt/hostedtoolcache/Python/*/arm64/lib/python*/site-packages/faiss*/**/*.so", recursive=True)
+          seen = set()
+          for h in sorted(hits):
+              base = h.split("/")[-1]
+              if base in seen:
+                  continue
+              seen.add(base)
+              r = scan.scan_elf(pathlib.Path(h).read_bytes())
+              if not r or r["instructions"] < 10000:
+                  continue
+              print(f"{base:<34} {r['instructions']:>10,} insns  "
+                    f"cov {r['coverage']*100:5.1f}%  {r['features']}")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vector-search-headroom
+          path: |
+            headroom.txt
+            faiss_baseline.txt
+            cpuid.json
