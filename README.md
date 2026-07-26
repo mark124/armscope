@@ -12,8 +12,35 @@ per second**, which is slower than FAISS's own exact float32 index.
 which is exactly the shape `SDOT` (Armv8.2 dotprod) and `SMMLA` (Armv8.6 i8mm)
 were added to accelerate.
 
-Measured on Neoverse N2, dim=384, 100,000 vectors, k=10. The baseline is the
-**fastest FAISS int8 mode that actually works**, not the slowest one:
+**On real embeddings**, 60,000 text passages encoded with `all-MiniLM-L6-v2`,
+384-dim, k=10, single thread, Neoverse N2:
+
+```
+  FAISS IndexFlatIP (float32)      303.8 QPS   recall 1.000
+  FAISS QT_8bit_direct_signed      231.8 QPS   recall 0.978   <- fastest FAISS int8
+  FAISS QT_8bit_uniform             90.5 QPS   recall 0.980
+  FAISS QT_8bit                     87.1 QPS   recall 0.987
+  sq8 [smmla]                    1,989.9 QPS   recall 0.981
+```
+
+- **8.6x faster than the fastest working FAISS int8 mode, at better recall**
+  (0.981 vs 0.978). Approximate int8 against approximate int8, the fair fight.
+- **6.6x faster than FAISS's exact float32 search**, giving up 1.9 points of
+  recall. Different claim, stated separately rather than blended in.
+
+Note what the full table shows: **every FAISS int8 mode is slower than FAISS's
+own exact float32 search on Arm.** You adopt scalar quantization to go faster,
+and on Arm it makes you slower while saving memory.
+
+This benchmark deliberately avoids random vectors. Gaussian noise is the
+friendliest possible input for quantization: isotropic, unclustered, every
+dimension equally informative. Measured anisotropy (largest over mean singular
+value) was **4.7 for the real corpus against 1.3 for Gaussian noise**, so this
+is the skewed, clustered structure uniform int8 handles worst, and recall
+survived it.
+
+**On synthetic data**, dim=384, 100,000 vectors, against the same
+fastest-working-mode baseline:
 
 ```
 SINGLE THREAD
@@ -32,7 +59,9 @@ ALL 4 CORES, BOTH SIDES
 
 **The advantage is not an artifact of a hobbled baseline.** sq8 is
 OpenMP-parallel and scales 3.7x on four cores, and the ratio holds at roughly
-8x whether both sides get one thread or the whole machine.
+8x whether both sides get one thread or the whole machine. Synthetic and real
+embedding data independently land on 8.5x and 8.6x, which is why the figure is
+trusted.
 
 Against FAISS's default `QT_8bit`, which is the mode most people reach for, the
 figure is 22x. That is literally true and it is not the number quoted above,

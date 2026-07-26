@@ -136,31 +136,53 @@ def main() -> None:
         rows.append((f"sq8 [{kname}]", len(xq) / t, recall(ids, gt)))
     lib.sq8_force_kernel(-1)
 
-    # The bar is the FASTEST FAISS int8 mode that actually works, not the
-    # slowest one. A mode returning garbage cannot set the bar.
+    # Two comparisons, kept separate on purpose.
+    #   like-for-like : sq8 vs the fastest WORKING FAISS int8 mode. Both are
+    #                   approximate int8, so this is the fair fight.
+    #   vs exact      : sq8 vs FAISS float32 exact search. Different claim,
+    #                   and the recall gap there is a genuine accuracy cost.
+    # Collapsing them into one number would flatter whichever suits the story.
     VALID = 0.5
-    faiss_rows = [r for r in rows if r[0].startswith("FAISS ") and r[2] > VALID]
-    best_faiss = max(faiss_rows, key=lambda r: r[1]) if faiss_rows else None
+    int8_rows = [r for r in rows
+                 if r[0].startswith("FAISS Q") and r[2] > VALID]
+    best_int8 = max(int8_rows, key=lambda r: r[1]) if int8_rows else None
+    exact_row = next((r for r in rows if "IndexFlatIP" in r[0]), None)
 
-    print(f"\n  {'index':<34} {'QPS':>10} {'recall@10':>11} {'vs best FAISS':>15}")
+    ref = best_int8 or exact_row
+    print(f"\n  {'index':<34} {'QPS':>10} {'recall@10':>11} "
+          f"{'vs best int8':>14}")
     print("  " + "-" * 75)
     for label, qps, rec in rows:
-        ratio = qps / best_faiss[1] if best_faiss else float("nan")
-        flag = "  <- best valid FAISS" if best_faiss and label == best_faiss[0] else ""
-        print(f"  {label:<34} {qps:>10,.1f} {rec:>11.3f} {ratio:>14.1f}x{flag}")
+        ratio = qps / ref[1] if ref else float("nan")
+        flag = ""
+        if best_int8 and label == best_int8[0]:
+            flag = "  <- fastest working FAISS int8"
+        elif exact_row and label == exact_row[0]:
+            flag = "  <- exact float32"
+        print(f"  {label:<34} {qps:>10,.1f} {rec:>11.3f} {ratio:>13.1f}x{flag}")
 
-    sq8_rows = [r for r in rows if r[0].startswith("sq8")]
-    best_sq8 = max(sq8_rows, key=lambda r: r[1])
-    if best_faiss:
-        delta_pp = (best_faiss[2] - best_sq8[2]) * 100.0
-        print(f"\n  best valid FAISS : {best_faiss[0]} "
-              f"{best_faiss[1]:,.1f} QPS @ recall {best_faiss[2]:.3f}")
-        print(f"  best sq8         : {best_sq8[0]} "
-              f"{best_sq8[1]:,.1f} QPS @ recall {best_sq8[2]:.3f}")
-        print(f"\n  >> speedup {best_sq8[1] / best_faiss[1]:.1f}x, "
-              f"recall {delta_pp:+.1f} percentage points")
-        print("  A positive recall delta means sq8 gives up that much accuracy;")
-        print("  a negative one means it is more accurate as well as faster.")
+    best_sq8 = max((r for r in rows if r[0].startswith("sq8")),
+                   key=lambda r: r[1])
+    print(f"\n  best sq8 : {best_sq8[0]} {best_sq8[1]:,.1f} QPS "
+          f"@ recall {best_sq8[2]:.3f}")
+
+    if best_int8:
+        d = (best_sq8[2] - best_int8[2]) * 100.0
+        print(f"\n  vs fastest FAISS int8 ({best_int8[0]}):")
+        print(f"    {best_sq8[1] / best_int8[1]:.1f}x faster, "
+              f"recall {d:+.1f} percentage points "
+              f"({'better' if d >= 0 else 'worse'})")
+    if exact_row:
+        d = (best_sq8[2] - exact_row[2]) * 100.0
+        print(f"\n  vs exact float32 search:")
+        print(f"    {best_sq8[1] / exact_row[1]:.1f}x faster, "
+              f"recall {d:+.1f} percentage points (this is the accuracy cost)")
+
+    if best_int8 and exact_row and best_int8[1] < exact_row[1]:
+        print(f"\n  >> Note: every FAISS int8 mode here is SLOWER than FAISS's")
+        print(f"     own exact float32 search ({best_int8[1]:,.1f} vs "
+              f"{exact_row[1]:,.1f} QPS). On Arm, quantizing costs speed and")
+        print(f"     buys only memory.")
 
 
 if __name__ == "__main__":
