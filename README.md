@@ -1,12 +1,22 @@
 # armscope
 
-**Int8 vector search on Arm is slower than not quantizing at all. This fixes it.**
+**FAISS's scalar-quantizer index is slower on Arm than not quantizing at all.
+This fixes it.**
 
-FAISS's `IndexScalarQuantizer` stores vectors as int8 to save memory, then
-computes distances by dequantizing every stored component back to float32,
-because it keeps the query in float. That operation cannot use Arm's int8
-instructions. Measured on Neoverse N2 it runs at **15.0 million dot products
-per second**, which is slower than FAISS's own exact float32 index.
+`IndexScalarQuantizer` stores vectors as int8 to save memory, then computes
+distances by dequantizing every stored component back to float32, because it
+keeps the query in float. That operation cannot use Arm's int8 instructions:
+`libfaiss.so` contains 1.8 million instructions and **exactly zero SDOT or
+SMMLA**, at 100% scan coverage. Measured on Neoverse N2 it runs at **15.0
+million dot products per second**, slower than FAISS's own exact float32 index.
+
+**Scope note, stated up front.** That claim is about the *scalar quantizer*
+path specifically. FAISS also ships PQ fast-scan (`IndexPQFastScan`,
+`IndexIVFPQFastScan`), which has had NEON SIMD since PR #1815 and is a
+separate, much faster path that trades recall for speed. It is benchmarked
+here at matched recall in [`bench/pq_fastscan.py`](bench/pq_fastscan.py)
+rather than ignored, because a speedup quoted against only the slowest
+available baseline is not a speedup.
 
 `sq8` quantizes the query too. The inner loop becomes a pure int8 dot product,
 which is exactly the shape `SDOT` (Armv8.2 dotprod) and `SMMLA` (Armv8.6 i8mm)
@@ -72,6 +82,29 @@ omission.
 It stores unsigned codes in [0, 255], so for inner product on signed normalized
 vectors the shared +127.5 offset dominates every dot product and destroys the
 ranking. It is structurally unusable for this metric, not merely mistuned.
+
+## What this costs you: memory
+
+Scalar quantization exists to save memory, so the memory number belongs next to
+the speed number rather than omitted. Measured at dim=384:
+
+| index | bytes/vector | recall@10 |
+| --- | --- | --- |
+| FAISS IndexPQFastScan m=24 | 12.0 | 0.018 |
+| FAISS IndexPQFastScan m=96 | 48.0 | 0.176 |
+| FAISS IndexPQFastScan m=192 | 96.0 | 0.487 |
+| FAISS IndexScalarQuantizer | 384.0 | 0.983 |
+| **sq8** | **388.0** | **0.981** |
+
+**sq8 is 4 bytes per vector larger than FAISS SQ8**, because it stores codes
+padded to a multiple of 16 plus a float32 per-vector scale. So sq8 buys speed
+and gives up a little ground on memory, and it is 4x to 32x larger than PQ.
+
+sq8 occupies the high-recall corner: it is for workloads that need 0.98 recall
+and want it fast. If your budget is bytes rather than accuracy, PQ is the right
+tool and this is not it. (Recall figures above are on synthetic Gaussian data,
+which is PQ's worst case; the real-embedding comparison is in
+`bench/bench_real_embeddings.py`.)
 
 ## Where the speedup actually comes from
 
