@@ -71,11 +71,21 @@ jobs:
       - name: Install FAISS
         run: pip install --quiet faiss-cpu numpy
 
-      - name: Head to head, with recall
+      - name: Head to head on synthetic data
         run: python bench/bench_vs_faiss.py | tee sq8_vs_faiss.txt
+
+      # Random Gaussians are the easiest possible input for quantization.
+      # Real embeddings are anisotropic and clustered, so recall is only
+      # trustworthy when measured here, against published ground truth.
+      - name: Head to head on real embeddings
+        run: |
+          pip install --quiet h5py
+          python bench/bench_real_embeddings.py | tee sq8_real.txt
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: sq8-benchmark
-          path: sq8_vs_faiss.txt
+          path: |
+            sq8_vs_faiss.txt
+            sq8_real.txt
