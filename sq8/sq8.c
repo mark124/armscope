@@ -83,26 +83,46 @@ static int32_t dot_scalar(const int8_t *a, const int8_t *b, int dpad) {
 
 #if defined(__aarch64__)
 static int32_t dot_neon(const int8_t *a, const int8_t *b, int dpad) {
-    int32x4_t acc = vdupq_n_s32(0);
+    int32x4_t c0 = vdupq_n_s32(0), c1 = c0;
     int i = 0;
+    for (; i + 32 <= dpad; i += 32) {
+        int8x16_t va = vld1q_s8(a + i), vb = vld1q_s8(b + i);
+        c0 = vpadalq_s16(c0, vmull_s8(vget_low_s8(va), vget_low_s8(vb)));
+        c1 = vpadalq_s16(c1, vmull_high_s8(va, vb));
+        int8x16_t wa = vld1q_s8(a + i + 16), wb = vld1q_s8(b + i + 16);
+        c0 = vpadalq_s16(c0, vmull_s8(vget_low_s8(wa), vget_low_s8(wb)));
+        c1 = vpadalq_s16(c1, vmull_high_s8(wa, wb));
+    }
     for (; i + 16 <= dpad; i += 16) {
         int8x16_t va = vld1q_s8(a + i), vb = vld1q_s8(b + i);
-        acc = vpadalq_s16(acc, vmull_s8(vget_low_s8(va), vget_low_s8(vb)));
-        acc = vpadalq_s16(acc, vmull_high_s8(va, vb));
+        c0 = vpadalq_s16(c0, vmull_s8(vget_low_s8(va), vget_low_s8(vb)));
+        c1 = vpadalq_s16(c1, vmull_high_s8(va, vb));
     }
-    int32_t s = vaddvq_s32(acc);
+    int32_t s = vaddvq_s32(vaddq_s32(c0, c1));
     for (; i < dpad; i++) s += (int32_t)a[i] * (int32_t)b[i];
     return s;
 }
 
 #if defined(__ARM_FEATURE_DOTPROD)
+/* Four independent accumulators. SDOT has multi-cycle latency, so a single
+ * accumulator serialises the loop on its own dependency chain and ends up
+ * slower than what the compiler autovectorises from a naive scalar loop.
+ * Measured on Neoverse N2: one accumulator gave 484 QPS, below plain C at
+ * 1,015. Keeping four dot products in flight is what makes the instruction
+ * worth using at all. */
 static int32_t dot_sdot(const int8_t *a, const int8_t *b, int dpad) {
-    int32x4_t acc = vdupq_n_s32(0);
+    int32x4_t c0 = vdupq_n_s32(0), c1 = c0, c2 = c0, c3 = c0;
     int i = 0;
-    for (; i + 16 <= dpad; i += 16) {
-        acc = vdotq_s32(acc, vld1q_s8(a + i), vld1q_s8(b + i));
+    for (; i + 64 <= dpad; i += 64) {
+        c0 = vdotq_s32(c0, vld1q_s8(a + i),      vld1q_s8(b + i));
+        c1 = vdotq_s32(c1, vld1q_s8(a + i + 16), vld1q_s8(b + i + 16));
+        c2 = vdotq_s32(c2, vld1q_s8(a + i + 32), vld1q_s8(b + i + 32));
+        c3 = vdotq_s32(c3, vld1q_s8(a + i + 48), vld1q_s8(b + i + 48));
     }
-    int32_t s = vaddvq_s32(acc);
+    for (; i + 16 <= dpad; i += 16) {
+        c0 = vdotq_s32(c0, vld1q_s8(a + i), vld1q_s8(b + i));
+    }
+    int32_t s = vaddvq_s32(vaddq_s32(vaddq_s32(c0, c1), vaddq_s32(c2, c3)));
     for (; i < dpad; i++) s += (int32_t)a[i] * (int32_t)b[i];
     return s;
 }
@@ -113,16 +133,27 @@ static int32_t dot_sdot(const int8_t *a, const int8_t *b, int dpad) {
  * result: {a0.b0, a0.b1, a1.b0, a1.b1}. It therefore only pays when two
  * queries and two database vectors are handled together, which is why the
  * search loop below tiles over both. */
+#define SMMLA_STEP(acc, off)                                              \
+    (acc) = vmmlaq_s32((acc),                                             \
+        vcombine_s8(vld1_s8(a0 + i + (off)), vld1_s8(a1 + i + (off))),    \
+        vcombine_s8(vld1_s8(b0 + i + (off)), vld1_s8(b1 + i + (off))))
+
 static void dot2x2_smmla(const int8_t *a0, const int8_t *a1,
                          const int8_t *b0, const int8_t *b1,
                          int dpad, int32_t out[4]) {
-    int32x4_t acc = vdupq_n_s32(0);
-    for (int i = 0; i + 8 <= dpad; i += 8) {
-        int8x16_t va = vcombine_s8(vld1_s8(a0 + i), vld1_s8(a1 + i));
-        int8x16_t vb = vcombine_s8(vld1_s8(b0 + i), vld1_s8(b1 + i));
-        acc = vmmlaq_s32(acc, va, vb);
+    int32x4_t c0 = vdupq_n_s32(0), c1 = c0, c2 = c0, c3 = c0;
+    int i = 0;
+    /* Four accumulators for the same latency-hiding reason as SDOT above. */
+    for (; i + 32 <= dpad; i += 32) {
+        SMMLA_STEP(c0, 0);
+        SMMLA_STEP(c1, 8);
+        SMMLA_STEP(c2, 16);
+        SMMLA_STEP(c3, 24);
     }
-    vst1q_s32(out, acc);
+    for (; i + 8 <= dpad; i += 8) {
+        SMMLA_STEP(c0, 0);
+    }
+    vst1q_s32(out, vaddq_s32(vaddq_s32(c0, c1), vaddq_s32(c2, c3)));
 }
 #endif
 #endif /* __aarch64__ */
@@ -263,7 +294,9 @@ sq8_kernel_t sq8_search_ip(const sq8_index_t *idx,
     const int dpad = idx->dpad;
     const int64_t n = idx->n;
 
-    cand_t *heap = malloc((size_t)k * sizeof(cand_t));
+    /* Two heaps' worth: the SMMLA path processes a pair of queries at once
+     * and needs one heap each. Allocated once rather than per query pair. */
+    cand_t *heap = malloc((size_t)2 * k * sizeof(cand_t));
     if (!heap) return kern;
 
 #if defined(__aarch64__) && defined(__ARM_FEATURE_MATMUL_INT8)
@@ -274,8 +307,7 @@ sq8_kernel_t sq8_search_ip(const sq8_index_t *idx,
             const int8_t *q0 = qcodes + qi * dpad;
             const int8_t *q1 = qcodes + (qi + 1) * dpad;
             int c0 = 0, c1 = 0;
-            cand_t *h0 = heap, *h1 = malloc((size_t)k * sizeof(cand_t));
-            if (!h1) break;
+            cand_t *h0 = heap, *h1 = heap + k;
             float s0 = qscales[qi], s1 = qscales[qi + 1];
             int32_t out[4];
 
@@ -303,7 +335,6 @@ sq8_kernel_t sq8_search_ip(const sq8_index_t *idx,
                 out_ids[(qi + 1) * k + j] = j < c1 ? h1[j].id : -1;
                 out_scores[(qi + 1) * k + j] = j < c1 ? h1[j].score : -INFINITY;
             }
-            free(h1);
         }
         if (nq % 2 == 0) { free(heap); return kern; }
         /* fall through for the final odd query */
