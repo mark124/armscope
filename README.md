@@ -33,10 +33,37 @@ were added to accelerate.
   sq8 [smmla]                    1,989.9 QPS   recall 0.981
 ```
 
-- **8.6x faster than the fastest working FAISS int8 mode, at better recall**
+- **9.0x faster than the fastest working FAISS int8 mode, at better recall**
   (0.981 vs 0.978). Approximate int8 against approximate int8, the fair fight.
 - **6.6x faster than FAISS's exact float32 search**, giving up 1.9 points of
   recall. Different claim, stated separately rather than blended in.
+
+### Against PQ fast-scan, which is the real competition
+
+Quoting a speedup against only the slowest baseline is not a speedup, so
+FAISS's PQ fast-scan path is benchmarked too, on the same real embeddings:
+
+| index | QPS | recall@10 | bytes/vec |
+| --- | --- | --- | --- |
+| FAISS IVFPQFastScan 256/32 | 15,258.2 | 0.605 | 48 |
+| FAISS IndexPQFastScan m=96 | 3,786.9 | 0.617 | 48 |
+| FAISS IndexPQFastScan m=192 | 2,030.8 | 0.787 | 96 |
+| **sq8 [smmla]** | **2,024.9** | **0.981** | 388 |
+| FAISS QT_8bit_direct_signed | 224.0 | 0.978 | 384 |
+
+PQ is much faster in absolute terms, and on synthetic Gaussian data its recall
+collapses to 0.487, but that is PQ's worst case and would be an unfair test. On
+real embeddings, which have exactly the sub-space structure PQ exploits, it
+reaches 0.787 and still cannot enter the 0.98 band.
+
+The sharpest line in that table: `IndexPQFastScan m=192` runs at effectively
+identical speed to sq8 (2,030.8 vs 2,024.9) and returns **0.787 recall against
+our 0.981**.
+
+**So the claim is: at matched recall, sq8 is the fastest thing FAISS offers on
+Arm.** If you can accept 0.6 to 0.8 recall, PQ is faster and 4x to 8x smaller,
+and you should use PQ. These are different points on the same curve, not a
+winner and a loser.
 
 Note what the full table shows: **every FAISS int8 mode is slower than FAISS's
 own exact float32 search on Arm.** You adopt scalar quantization to go faster,
