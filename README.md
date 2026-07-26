@@ -12,32 +12,37 @@ per second**, which is slower than FAISS's own exact float32 index.
 which is exactly the shape `SDOT` (Armv8.2 dotprod) and `SMMLA` (Armv8.6 i8mm)
 were added to accelerate.
 
-**On real embeddings**, 60,000 text passages encoded with
-`all-MiniLM-L6-v2`, k=10, single threaded, Neoverse N2:
+Measured on Neoverse N2, dim=384, 100,000 vectors, k=10. The baseline is the
+**fastest FAISS int8 mode that actually works**, not the slowest one:
 
 ```
-  index                                     QPS   recall@10   vs FAISS SQ8
-  FAISS IndexFlatIP (float32)             305.4       1.000          3.5x
-  FAISS IndexScalarQuantizer               87.1       0.987          1.0x
-  sq8 [neon]                              755.6       0.981          8.7x
-  sq8 [scalar]                          1,258.5       0.981         14.4x
-  sq8 [sdot]                            1,537.2       0.981         17.6x
-  sq8 [smmla]                           2,056.6       0.981         23.6x
+SINGLE THREAD
+  sq8 [smmla]                    1,171.2 QPS   recall 0.981
+  FAISS QT_8bit_direct_signed      137.5 QPS   recall 0.952   <- best valid FAISS
+  FAISS QT_8bit_uniform             54.2 QPS   recall 0.980
+  FAISS QT_8bit                     52.3 QPS   recall 0.983
+  -> 8.5x, at better recall
+
+ALL 4 CORES, BOTH SIDES
+  sq8 [smmla] x4                 4,341.0 QPS
+  FAISS QT_8bit_direct_signed x4   548.0 QPS
+  FAISS IndexFlatIP x4             486.8 QPS
+  -> 7.9x
 ```
 
-**23.6x faster at a cost of 0.6 percentage points of recall** (0.981 against
-0.987). That cost is what quantizing the query side buys the speed with, and it
-is stated here rather than in a footnote.
+**The advantage is not an artifact of a hobbled baseline.** sq8 is
+OpenMP-parallel and scales 3.7x on four cores, and the ratio holds at roughly
+8x whether both sides get one thread or the whole machine.
 
-This benchmark deliberately does not use random vectors. Gaussian noise is the
-friendliest possible input for quantization: isotropic, unclustered, every
-dimension equally informative. Real embeddings are none of those. Measured
-anisotropy (largest over mean singular value) was **4.7 for the real corpus
-against 1.3 for Gaussian noise**, so this is the skewed, clustered structure
-uniform int8 handles worst, and recall survived it.
+Against FAISS's default `QT_8bit`, which is the mode most people reach for, the
+figure is 22x. That is literally true and it is not the number quoted above,
+because a faster FAISS mode exists and leading with 22x would be dishonest by
+omission.
 
-On synthetic data at dim=128 with 200,000 vectors the same comparison gives
-74.8 QPS for FAISS against 1,488.8 for `sq8 [smmla]`, **19.9x**.
+`QT_8bit_direct` reaches 142.5 QPS but scores **recall 0.000** and is excluded.
+It stores unsigned codes in [0, 255], so for inner product on signed normalized
+vectors the shared +127.5 offset dominates every dot product and destroys the
+ranking. It is structurally unusable for this metric, not merely mistuned.
 
 ## Where the speedup actually comes from
 
@@ -45,11 +50,30 @@ Two separate things, and it matters which is which:
 
 | source | gain |
 | --- | --- |
-| symmetric quantization (both sides int8) | **~12x** |
-| Arm i8mm/dotprod kernels on top of that | **1.68x** at dim=128, 1.10x at dim=768 |
+| symmetric quantization (both sides int8) | **~6.5x** |
+| Arm i8mm/dotprod kernels on top of that | **1.31x** (smmla 1,171 vs scalar 893) |
 
 Most of the win is the design change. The Arm instructions add a real but
-smaller multiplier on top. Reporting "19.9x from i8mm" would be false.
+smaller multiplier on top. Reporting the headline figure as "8.5x from i8mm"
+would be false.
+
+## What this was red-teamed against
+
+Every objection below was tested rather than assumed, in
+[`bench/redteam.py`](bench/redteam.py):
+
+- **Was the baseline a strawman?** Partly, yes. The first version of this
+  README quoted 23.6x against `QT_8bit`. Testing all four FAISS int8 modes
+  found `QT_8bit_direct_signed` is 2.7x faster, which cut the honest figure to
+  8.5x. The larger number was withdrawn.
+- **Was FAISS crippled by single-threading?** No. Both sides now run on all
+  four cores and the ratio holds at 7.9x.
+- **Is this state of the art?** Unproven, and stated as such. USearch and
+  SimSIMD already do symmetric int8 with SIMD, so the *technique* is not novel;
+  what is missing is a FAISS-comparable implementation with i8mm on Arm.
+  SimSIMD measured 97.1 QPS here, but its runtime reports `neon_i8: False` and
+  `sve_i8: False` even when built from source, so it was running a serial
+  fallback and that comparison is labelled invalid rather than banked.
 
 ## The gap this closes
 

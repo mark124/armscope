@@ -101,20 +101,34 @@ def main() -> None:
     t_flat = timed(lambda: flat.search(xq, K), reps=3)
     _, gt = flat.search(xq, K)
 
-    fsq = faiss.IndexScalarQuantizer(d, faiss.ScalarQuantizer.QT_8bit,
-                                     faiss.METRIC_INNER_PRODUCT)
-    fsq.train(xb)
-    fsq.add(xb)
-    t_fsq = timed(lambda: fsq.search(xq, K), reps=3)
-    _, fsq_ids = fsq.search(xq, K)
+    rows = [("FAISS IndexFlatIP (float32)", len(xq) / t_flat, recall(gt, gt))]
+
+    # Every FAISS int8 mode, not just the slow one. QT_8bit_direct_signed is
+    # symmetric and routes to FAISS's NEON code-to-code kernel; comparing only
+    # against QT_8bit would be measuring against a strawman.
+    for name in ("QT_8bit", "QT_8bit_uniform", "QT_8bit_direct_signed"):
+        qt = getattr(faiss.ScalarQuantizer, name, None)
+        if qt is None:
+            continue
+        try:
+            if "direct" in name:
+                scale = np.abs(xb).max()
+                xb_m = np.clip(np.round(xb / scale * 127), -128, 127).astype(np.float32)
+                xq_m = np.clip(np.round(xq / scale * 127), -128, 127).astype(np.float32)
+            else:
+                xb_m, xq_m = xb, xq
+            fi = faiss.IndexScalarQuantizer(d, qt, faiss.METRIC_INNER_PRODUCT)
+            fi.train(xb_m)
+            fi.add(xb_m)
+            t = timed(lambda: fi.search(xq_m, K), reps=3)
+            r = recall(fi.search(xq_m, K)[1], gt)
+            rows.append((f"FAISS {name}", len(xq) / t, r))
+        except Exception as exc:  # noqa: BLE001
+            print(f"  {name} failed: {str(exc)[:70]}")
 
     idx = Sq8Index(xb)
     codes, scales = idx.quantize_queries(xq)
-
-    rows = [
-        ("FAISS IndexFlatIP (float32)", len(xq) / t_flat, recall(gt, gt)),
-        ("FAISS IndexScalarQuantizer", len(xq) / t_fsq, recall(fsq_ids, gt)),
-    ]
+    lib.sq8_set_num_threads(1)   # match the single-threaded FAISS above
     for kname, kid in KERNELS.items():
         lib.sq8_force_kernel(kid)
         t = timed(lambda: idx.search(codes, scales, len(xq), K), reps=3)
@@ -122,27 +136,31 @@ def main() -> None:
         rows.append((f"sq8 [{kname}]", len(xq) / t, recall(ids, gt)))
     lib.sq8_force_kernel(-1)
 
-    incumbent = rows[1]
-    print(f"\n  {'index':<34} {'QPS':>10} {'recall@10':>11} {'vs FAISS SQ8':>14}")
-    print("  " + "-" * 74)
+    # The bar is the FASTEST FAISS int8 mode that actually works, not the
+    # slowest one. A mode returning garbage cannot set the bar.
+    VALID = 0.5
+    faiss_rows = [r for r in rows if r[0].startswith("FAISS ") and r[2] > VALID]
+    best_faiss = max(faiss_rows, key=lambda r: r[1]) if faiss_rows else None
+
+    print(f"\n  {'index':<34} {'QPS':>10} {'recall@10':>11} {'vs best FAISS':>15}")
+    print("  " + "-" * 75)
     for label, qps, rec in rows:
-        ratio = qps / incumbent[1] if incumbent[1] else float("nan")
-        print(f"  {label:<34} {qps:>10,.1f} {rec:>11.3f} {ratio:>13.1f}x")
+        ratio = qps / best_faiss[1] if best_faiss else float("nan")
+        flag = "  <- best valid FAISS" if best_faiss and label == best_faiss[0] else ""
+        print(f"  {label:<34} {qps:>10,.1f} {rec:>11.3f} {ratio:>14.1f}x{flag}")
 
-    sq8_recall = rows[-1][2]
-    faiss_recall = incumbent[2]
-    exact_recall = rows[0][2]
-    delta_pp = (faiss_recall - sq8_recall) * 100.0
-
-    print(f"\n  exact float32      recall {exact_recall:.3f}")
-    print(f"  FAISS SQ8          recall {faiss_recall:.3f}")
-    print(f"  sq8                recall {sq8_recall:.3f}")
-    # State the cost in percentage points rather than hiding it behind a
-    # pass/fail tolerance. Quantizing the query side is what buys the speed,
-    # and whatever it costs belongs next to the speedup, not in a footnote.
-    print(f"\n  >> cost of quantizing the query side: {delta_pp:+.1f} "
-          f"percentage points of recall vs FAISS SQ8")
-    print(f"  >> speed bought with it: {rows[-1][1] / incumbent[1]:.1f}x")
+    sq8_rows = [r for r in rows if r[0].startswith("sq8")]
+    best_sq8 = max(sq8_rows, key=lambda r: r[1])
+    if best_faiss:
+        delta_pp = (best_faiss[2] - best_sq8[2]) * 100.0
+        print(f"\n  best valid FAISS : {best_faiss[0]} "
+              f"{best_faiss[1]:,.1f} QPS @ recall {best_faiss[2]:.3f}")
+        print(f"  best sq8         : {best_sq8[0]} "
+              f"{best_sq8[1]:,.1f} QPS @ recall {best_sq8[2]:.3f}")
+        print(f"\n  >> speedup {best_sq8[1] / best_faiss[1]:.1f}x, "
+              f"recall {delta_pp:+.1f} percentage points")
+        print("  A positive recall delta means sq8 gives up that much accuracy;")
+        print("  a negative one means it is more accurate as well as faster.")
 
 
 if __name__ == "__main__":
