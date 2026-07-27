@@ -1,0 +1,53 @@
+name: precision
+
+# int8 bought 2.24x on this hardware and changed 16% of retrieved neighbours.
+# Neoverse N2 also has FEAT_BF16 and FEAT_FP16, which the CPU-inference
+# ecosystem largely skipped on its way from fp32 to int8. This measures
+# whether either is the free option int8 turned out not to be.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "bench/precision.py"
+      - ".github/workflows/precision.yml"
+
+jobs:
+  precision:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Host
+        run: python tools/cpuid.py
+
+      - name: Install
+        run: pip install --quiet sentence-transformers scikit-learn
+
+      - name: Does the installed torch even contain bf16 kernels
+        run: |
+          pip install --quiet capstone pyelftools
+          python - <<'PY'
+          import glob, pathlib, sys
+          sys.path.insert(0, "armscope")
+          import scan
+          hits = glob.glob("/opt/hostedtoolcache/Python/*/arm64/lib/python*/site-packages/torch/lib/libtorch_cpu.so")
+          for h in hits:
+              r = scan.scan_elf(pathlib.Path(h).read_bytes())
+              if r:
+                  print(f"libtorch_cpu.so {r['instructions']:,} insns "
+                        f"cov {r['coverage']*100:.1f}%  {r['features']}")
+          PY
+
+      - name: Measure
+        run: python bench/precision.py | tee precision.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: precision
+          path: precision.txt
