@@ -36,8 +36,18 @@ jobs:
       - name: Install
         run: pip install --quiet faiss-cpu numpy
 
+      # One subprocess per size so the OS actually reclaims the arena between
+      # steps. An earlier single-process run was OOM-killed outright, taking
+      # the whole runner with it.
       - name: Scale sweep
-        run: python bench/scale.py | tee scale.txt
+        run: |
+          for n in 250000 500000 1000000 2000000 4000000; do
+            echo "--- n=$n ---"
+            SIZES=$n python bench/scale.py 2>&1 | grep -E '^\s+[0-9,]+ ' || \
+              echo "  n=$n did not complete (likely out of memory)"
+          done | tee scale.txt
+          echo "--- header for context ---"
+          SIZES=250000 python bench/scale.py | head -12
 
       - uses: actions/upload-artifact@v4
         if: always()

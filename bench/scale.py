@@ -70,24 +70,29 @@ def main() -> None:
             faiss.normalize_L2(xb)
             xq = np.ascontiguousarray(xb[:1])
 
-            # Fastest working FAISS int8 mode, established by earlier runs.
-            scale = float(np.abs(xb).max())
-            xb_m = np.clip(np.round(xb / scale * 127), -128, 127).astype(np.float32)
-            xq_m = np.ascontiguousarray(xb_m[:1])
-            fi = faiss.IndexScalarQuantizer(
-                d, faiss.ScalarQuantizer.QT_8bit_direct_signed,
-                faiss.METRIC_INNER_PRODUCT)
-            fi.train(xb_m)
-            fi.add(xb_m)
-            t_faiss = latency_ms(lambda: fi.search(xq_m, K))
-            del fi
-            gc.collect()
-
+            # Build sq8 FIRST, from the untouched float32 corpus.
             idx = Sq8Index(xb)
             codes, scales = idx.quantize_queries(xq)
             lib.sq8_force_kernel(KERNELS["smmla"])
             t_sq8 = latency_ms(lambda: idx.search(codes, scales, 1, K))
             lib.sq8_force_kernel(-1)
+
+            # Now convert the SAME array in place for FAISS's direct_signed
+            # mode. Allocating a second float32 copy here is what OOM-killed
+            # an earlier run: two 6.1GB arrays at n=4M does not fit in 13GB.
+            scale = float(np.abs(xb).max())
+            np.multiply(xb, 127.0 / scale, out=xb)
+            np.round(xb, out=xb)
+            np.clip(xb, -128, 127, out=xb)
+            xq_m = np.ascontiguousarray(xb[:1])
+            fi = faiss.IndexScalarQuantizer(
+                d, faiss.ScalarQuantizer.QT_8bit_direct_signed,
+                faiss.METRIC_INNER_PRODUCT)
+            fi.train(xb)
+            fi.add(xb)
+            t_faiss = latency_ms(lambda: fi.search(xq_m, K))
+            del fi
+            gc.collect()
 
             peak = rss_gb()
             ratio = t_faiss / t_sq8 if t_sq8 else float("nan")
@@ -99,7 +104,7 @@ def main() -> None:
             print(f"  {n:>10,} {t_faiss:>10.1f} {t_sq8:>9.1f} "
                   f"{ratio:>7.1f}x {peak:>9.1f}G  {verdict}")
 
-            del idx, xb, xb_m, codes, scales
+            del idx, xb, codes, scales
             gc.collect()
         except MemoryError:
             print(f"  {n:>10,}  out of memory, stop here")
