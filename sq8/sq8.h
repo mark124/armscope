@@ -76,6 +76,14 @@ typedef struct {
 sq8_index_t *sq8_build(const float *vectors, int64_t n, int d);
 void sq8_free(sq8_index_t *idx);
 
+/* Adopt codes that were quantized earlier, e.g. loaded from disk.
+ * `codes` must be n * (d rounded up to SQ8_PAD) int8, already padded with
+ * zeros, and `scales` n floats. Both are copied. This exists so a server can
+ * start against a 20M-vector index without re-quantizing from float32, which
+ * would need 30GB of source data it does not have. */
+sq8_index_t *sq8_from_codes(const int8_t *codes, const float *scales,
+                            int64_t n, int d);
+
 /* Quantize query vectors with the same scheme. Caller owns both buffers:
  *   codes  must hold nq * (padded d) int8
  *   scales must hold nq floats */

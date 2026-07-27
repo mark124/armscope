@@ -1,0 +1,194 @@
+"""Search server. Runs both backends on every query so the comparison is real.
+
+The demo claim is that the same machine answers the same question far faster
+with sq8 than with the stock int8 index. The only honest way to show that is to
+run both, on the same query, at the same moment, on the same box, and report
+both timings. Anything precomputed or staged is theatre.
+
+Memory budget on a 16GB host, at 384 dimensions:
+  sq8 codes      388 bytes/vector
+  FAISS codes    384 bytes/vector
+So ~8M passages holds both comparison indexes in about 6.2GB and leaves room
+for the OS and page cache. Text lives on disk behind an offset table and is
+read per result, never resident.
+"""
+
+from __future__ import annotations
+
+import ctypes
+import json
+import mmap
+import os
+import pathlib
+import time
+
+import numpy as np
+
+HERE = pathlib.Path(__file__).resolve().parent
+INDEX = pathlib.Path(os.environ.get("INDEX_DIR", HERE.parent / "index"))
+LIB = pathlib.Path(os.environ.get("SQ8_LIB", HERE.parent / "sq8" / "libsq8.so"))
+MODEL = os.environ.get("MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+WITH_FAISS = os.environ.get("WITH_FAISS", "1") == "1"
+
+lib = ctypes.CDLL(str(LIB))
+lib.sq8_from_codes.restype = ctypes.c_void_p
+lib.sq8_from_codes.argtypes = [ctypes.POINTER(ctypes.c_int8),
+                               ctypes.POINTER(ctypes.c_float),
+                               ctypes.c_int64, ctypes.c_int]
+lib.sq8_search_ip.restype = ctypes.c_int
+lib.sq8_search_ip.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int8),
+                              ctypes.POINTER(ctypes.c_float), ctypes.c_int64,
+                              ctypes.c_int, ctypes.POINTER(ctypes.c_int64),
+                              ctypes.POINTER(ctypes.c_float)]
+lib.sq8_quantize_queries.argtypes = [ctypes.POINTER(ctypes.c_float),
+                                     ctypes.c_int64, ctypes.c_int,
+                                     ctypes.POINTER(ctypes.c_int8),
+                                     ctypes.POINTER(ctypes.c_float)]
+lib.sq8_kernel_name.restype = ctypes.c_char_p
+lib.sq8_best_kernel.restype = ctypes.c_int
+lib.sq8_set_num_threads.argtypes = [ctypes.c_int]
+
+
+class Store:
+    """Passage text, memory-mapped, plus per-passage metadata."""
+
+    def __init__(self, d: pathlib.Path):
+        self.offsets = np.fromfile(d / "offsets.i64", dtype=np.int64)
+        f = open(d / "text.bin", "rb")
+        self.mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        self.meta = [json.loads(line) for line in
+                     open(d / "meta.jsonl", encoding="utf-8")]
+
+    def get(self, i: int) -> dict:
+        a, b = int(self.offsets[i]), int(self.offsets[i + 1])
+        m = self.meta[i]
+        return {"text": self.mm[a:b].decode("utf-8", "replace"), **m}
+
+
+def load():
+    manifest = json.loads((INDEX / "manifest.json").read_text())
+    n, dim, dpad = manifest["n"], manifest["dim"], manifest["dpad"]
+
+    codes = np.fromfile(INDEX / "codes.i8", dtype=np.int8)
+    scales = np.fromfile(INDEX / "scales.f32", dtype=np.float32)
+    ptr = lib.sq8_from_codes(
+        codes.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)),
+        scales.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), n, dim)
+    if not ptr:
+        raise SystemExit("sq8_from_codes failed")
+
+    faiss_idx = None
+    if WITH_FAISS:
+        import faiss
+        faiss.omp_set_num_threads(os.cpu_count() or 4)
+        # Reconstruct float32 from the SAME codes so both indexes hold
+        # identical data. FAISS's direct_signed mode reads int8 stored as
+        # float, and it was the fastest working FAISS int8 mode we measured.
+        f = faiss.IndexScalarQuantizer(
+            dim, faiss.ScalarQuantizer.QT_8bit_direct_signed,
+            faiss.METRIC_INNER_PRODUCT)
+        view = codes.reshape(n, dpad)[:, :dim].astype(np.float32)
+        f.train(view)
+        f.add(view)
+        del view
+        faiss_idx = f
+
+    del codes  # sq8 copied them; FAISS has its own
+    lib.sq8_set_num_threads(os.cpu_count() or 4)
+    return manifest, ptr, dim, dpad, faiss_idx, Store(INDEX), scales
+
+
+MANIFEST, IDX, DIM, DPAD, FAISS_IDX, STORE, SCALES = load()
+KERNEL = lib.sq8_kernel_name(lib.sq8_best_kernel()).decode()
+print(f"loaded {MANIFEST['n']:,} passages, dim {DIM}, kernel {KERNEL}")
+
+from sentence_transformers import SentenceTransformer  # noqa: E402
+
+ENCODER = SentenceTransformer(MODEL)
+
+
+def embed(q: str) -> np.ndarray:
+    v = ENCODER.encode([q], convert_to_numpy=True, normalize_embeddings=True)
+    return np.ascontiguousarray(v, dtype=np.float32)
+
+
+def search_sq8(vec: np.ndarray, k: int):
+    codes = np.zeros(DPAD, dtype=np.int8)
+    scale = np.zeros(1, dtype=np.float32)
+    lib.sq8_quantize_queries(vec.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                             1, DIM,
+                             codes.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)),
+                             scale.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
+    ids = np.zeros(k, dtype=np.int64)
+    sc = np.zeros(k, dtype=np.float32)
+    t0 = time.perf_counter()
+    lib.sq8_search_ip(IDX,
+                      codes.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)),
+                      scale.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                      1, k,
+                      ids.ctypes.data_as(ctypes.POINTER(ctypes.c_int64)),
+                      sc.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
+    return ids, (time.perf_counter() - t0) * 1000.0
+
+
+def search_faiss(vec: np.ndarray, k: int):
+    if FAISS_IDX is None:
+        return None, None
+    amax = float(np.abs(vec).max()) or 1.0
+    q = np.rint(vec / amax * 127).clip(-128, 127).astype(np.float32)
+    t0 = time.perf_counter()
+    _, ids = FAISS_IDX.search(q, k)
+    return ids[0], (time.perf_counter() - t0) * 1000.0
+
+
+try:
+    from fastapi import FastAPI
+    from fastapi.responses import HTMLResponse, JSONResponse
+except ImportError:
+    raise SystemExit("pip install fastapi uvicorn")
+
+app = FastAPI()
+
+
+@app.get("/api/search")
+def api_search(q: str, k: int = 10):
+    if not q.strip():
+        return JSONResponse({"error": "empty query"}, status_code=400)
+    t0 = time.perf_counter()
+    vec = embed(q)
+    embed_ms = (time.perf_counter() - t0) * 1000.0
+
+    ids, sq8_ms = search_sq8(vec, k)
+    f_ids, faiss_ms = search_faiss(vec, k)
+
+    results = [STORE.get(int(i)) for i in ids if 0 <= int(i) < MANIFEST["n"]]
+    overlap = None
+    if f_ids is not None:
+        overlap = len(set(ids.tolist()) & set(f_ids.tolist())) / max(len(ids), 1)
+
+    return {
+        "query": q,
+        "results": results,
+        "timing_ms": {"embed": round(embed_ms, 2),
+                      "sq8": round(sq8_ms, 2),
+                      "faiss": round(faiss_ms, 2) if faiss_ms else None},
+        "speedup": round(faiss_ms / sq8_ms, 2) if faiss_ms and sq8_ms else None,
+        "same_results": overlap,
+        "kernel": KERNEL,
+        "n": MANIFEST["n"],
+    }
+
+
+@app.get("/api/manifest")
+def api_manifest():
+    return {**MANIFEST, "kernel": KERNEL, "cores": os.cpu_count()}
+
+
+@app.get("/", response_class=HTMLResponse)
+def index():
+    return (HERE / "static" / "index.html").read_text(encoding="utf-8")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))

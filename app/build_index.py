@@ -1,0 +1,185 @@
+"""Stream a corpus into an sq8 index plus an on-disk passage store.
+
+Nothing here holds the corpus in memory. Twenty million passages of float32
+embeddings would be 30GB; the int8 codes are 7.8GB and the text lives on disk
+behind an offset table, which is what lets the whole thing serve from a 16GB
+box.
+
+Written files:
+  codes.i8      n * dpad int8, the quantized vectors
+  scales.f32    n float32, one per vector
+  text.bin      passage text, concatenated utf-8
+  offsets.i64   n+1 int64, byte offsets into text.bin
+  meta.jsonl    n rows of {title, url, source, licence}
+  manifest.json dimensions, counts, model, build settings
+
+Embedding uses ONNX Runtime int8 with per-channel quantization, which measured
+2.2x faster than PyTorch on Neoverse N2. Per-tensor quantization was the same
+speed and cost far more retrieval quality (0.670 vs 0.838 neighbour agreement
+against fp32), so per-channel is not optional here.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import pathlib
+import time
+
+import numpy as np
+
+PAD = 16
+
+
+def pad_dim(d: int) -> int:
+    return (d + PAD - 1) // PAD * PAD
+
+
+def quantize(vecs: np.ndarray, dpad: int) -> tuple[np.ndarray, np.ndarray]:
+    """Per-vector symmetric int8, matching sq8's own scheme exactly."""
+    amax = np.abs(vecs).max(axis=1)
+    scales = (amax / 127.0).astype(np.float32)
+    inv = np.where(scales > 0, 1.0 / np.maximum(scales, 1e-30), 0.0)
+    q = np.rint(vecs * inv[:, None]).clip(-127, 127).astype(np.int8)
+    if dpad > vecs.shape[1]:
+        q = np.pad(q, ((0, 0), (0, dpad - vecs.shape[1])))
+    return np.ascontiguousarray(q), scales
+
+
+class Embedder:
+    """int8 ONNX Runtime, per-channel. Falls back to PyTorch if export fails."""
+
+    def __init__(self, model: str, out: pathlib.Path):
+        self.dim = None
+        try:
+            from optimum.onnxruntime import (ORTModelForFeatureExtraction,
+                                             ORTQuantizer)
+            from optimum.onnxruntime.configuration import AutoQuantizationConfig
+            from transformers import AutoTokenizer
+
+            fp32_dir = out / "_onnx_fp32"
+            int8_dir = out / "_onnx_int8"
+            if not (int8_dir / "model_quantized.onnx").exists():
+                m = ORTModelForFeatureExtraction.from_pretrained(model,
+                                                                 export=True)
+                m.save_pretrained(fp32_dir)
+                q = ORTQuantizer.from_pretrained(fp32_dir)
+                q.quantize(save_dir=int8_dir,
+                           quantization_config=AutoQuantizationConfig.arm64(
+                               is_static=False, per_channel=True))
+            self.tok = AutoTokenizer.from_pretrained(model)
+            self.model = ORTModelForFeatureExtraction.from_pretrained(
+                int8_dir, file_name="model_quantized.onnx")
+            self.backend = "onnxruntime-int8-per-channel"
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ONNX path unavailable ({str(exc)[:70]}), using PyTorch")
+            from sentence_transformers import SentenceTransformer
+            self.st = SentenceTransformer(model)
+            self.model = None
+            self.backend = "pytorch-fp32"
+
+    def __call__(self, texts: list[str]) -> np.ndarray:
+        if self.model is None:
+            v = self.st.encode(texts, convert_to_numpy=True,
+                               normalize_embeddings=True,
+                               show_progress_bar=False)
+            return np.ascontiguousarray(v, dtype=np.float32)
+        enc = self.tok(texts, padding=True, truncation=True, max_length=256,
+                       return_tensors="np")
+        out = self.model(**dict(enc))
+        hidden = np.asarray(out["last_hidden_state"], dtype=np.float32)
+        mask = enc["attention_mask"][..., None].astype(np.float32)
+        pooled = (hidden * mask).sum(1) / np.clip(mask.sum(1), 1e-9, None)
+        norm = np.linalg.norm(pooled, axis=1, keepdims=True)
+        return np.ascontiguousarray(pooled / np.clip(norm, 1e-12, None))
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", default="index")
+    ap.add_argument("--corpora", default="wikipedia,stackexchange,arxiv,gutenberg")
+    ap.add_argument("--per-corpus", type=int, default=None,
+                    help="passages per corpus, omit for everything")
+    ap.add_argument("--model", default="sentence-transformers/all-MiniLM-L6-v2")
+    ap.add_argument("--batch", type=int, default=128)
+    args = ap.parse_args()
+
+    import corpora
+
+    out = pathlib.Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    names = [n.strip() for n in args.corpora.split(",") if n.strip()]
+    print(f"building from {names}, {args.per_corpus or 'all'} per corpus")
+
+    emb = Embedder(args.model, out)
+    print(f"  embedder: {emb.backend}")
+
+    f_codes = open(out / "codes.i8", "wb")
+    f_scales = open(out / "scales.f32", "wb")
+    f_text = open(out / "text.bin", "wb")
+    f_off = open(out / "offsets.i64", "wb")
+    f_meta = open(out / "meta.jsonl", "w", encoding="utf-8")
+
+    offset = 0
+    f_off.write(np.int64(0).tobytes())
+    n = 0
+    dim = dpad = None
+    per_source: dict[str, int] = {}
+    batch: list = []
+    t0 = time.perf_counter()
+
+    def flush(items):
+        nonlocal offset, n, dim, dpad
+        if not items:
+            return
+        vecs = emb([p.text for p in items])
+        if dim is None:
+            dim = int(vecs.shape[1])
+            dpad = pad_dim(dim)
+            print(f"  embedding dim {dim}, padded to {dpad}")
+        codes, scales = quantize(vecs, dpad)
+        f_codes.write(codes.tobytes())
+        f_scales.write(scales.tobytes())
+        for p in items:
+            blob = p.text.encode("utf-8")
+            f_text.write(blob)
+            offset += len(blob)
+            f_off.write(np.int64(offset).tobytes())
+            f_meta.write(json.dumps({"title": p.title, "url": p.url,
+                                     "source": p.source,
+                                     "licence": p.licence},
+                                    ensure_ascii=False) + "\n")
+            per_source[p.source] = per_source.get(p.source, 0) + 1
+        n += len(items)
+        if n % (args.batch * 40) == 0:
+            rate = n / (time.perf_counter() - t0)
+            print(f"  {n:,} passages  {rate:,.0f}/s  {per_source}")
+
+    for p in corpora.stream(names, args.per_corpus):
+        batch.append(p)
+        if len(batch) >= args.batch:
+            flush(batch)
+            batch = []
+    flush(batch)
+
+    for f in (f_codes, f_scales, f_text, f_off, f_meta):
+        f.close()
+
+    elapsed = time.perf_counter() - t0
+    manifest = {
+        "n": n, "dim": dim, "dpad": dpad, "model": args.model,
+        "embedder": emb.backend, "corpora": names,
+        "per_source": per_source,
+        "bytes_per_vector": (dpad or 0) + 4,
+        "build_seconds": round(elapsed, 1),
+        "passages_per_second": round(n / elapsed, 1) if elapsed else None,
+    }
+    (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    print(f"\nwrote {n:,} passages in {elapsed / 60:.1f} min")
+    print(f"  vectors {(n * ((dpad or 0) + 4)) / 1e9:.2f} GB resident")
+    print(f"  text    {offset / 1e9:.2f} GB on disk")
+    print(json.dumps(manifest, indent=2))
+
+
+if __name__ == "__main__":
+    main()

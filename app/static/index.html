@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Semantic search on one Arm core</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --line: #30363d;
+    --ink: #e6edf3; --dim: #8b949e; --fast: #3fb950; --slow: #d29922;
+    --accent: #58a6ff;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#fff; --panel:#f6f8fa; --line:#d0d7de; --ink:#1f2328;
+            --dim:#656d76; --fast:#1a7f37; --slow:#9a6700; --accent:#0969da; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:15px/1.55 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: 1.5rem; margin: 0 0 6px; letter-spacing:-.01em; }
+  .sub { color: var(--dim); margin: 0 0 24px; }
+  .sub b { color: var(--ink); font-weight: 600; }
+  form { display: flex; gap: 8px; margin-bottom: 20px; }
+  input {
+    flex: 1; padding: 12px 14px; font-size: 16px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  }
+  input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  button {
+    padding: 12px 20px; font-size: 15px; font-weight: 600; border: 0;
+    border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer;
+  }
+  button:disabled { opacity: .55; cursor: default; }
+  .race { display: grid; gap: 10px; margin: 18px 0 26px; }
+  .lane { display: grid; grid-template-columns: 130px 1fr 90px;
+          align-items: center; gap: 12px; }
+  .lane .name { color: var(--dim); font-size: 13px; }
+  .track { height: 26px; background: var(--panel); border-radius: 6px;
+           border: 1px solid var(--line); overflow: hidden; }
+  .bar { height: 100%; width: 0; transition: width .5s cubic-bezier(.2,.8,.2,1); }
+  .bar.slow { background: var(--slow); }
+  .bar.fast { background: var(--fast); }
+  .ms { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .verdict { color: var(--dim); font-size: 14px; margin-top: -12px; }
+  .verdict b { color: var(--ink); }
+  .r { border-top: 1px solid var(--line); padding: 14px 0; }
+  .r .t { font-weight: 600; margin-bottom: 3px; }
+  .r .t a { color: var(--ink); text-decoration: none; }
+  .r .t a:hover { color: var(--accent); text-decoration: underline; }
+  .r .p { color: var(--ink); opacity: .85; }
+  .tag { display:inline-block; font-size:11px; text-transform:uppercase;
+         letter-spacing:.04em; color:var(--dim); border:1px solid var(--line);
+         border-radius:4px; padding:1px 6px; margin-right:8px; }
+  footer { margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--line);
+           color: var(--dim); font-size: 13px; }
+  footer a { color: var(--dim); }
+  .ex { color: var(--dim); font-size: 13px; margin-bottom: 18px; }
+  .ex a { color: var(--accent); cursor: pointer; text-decoration: none;
+          margin-right: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Semantic search across <span id="n">…</span> passages</h1>
+  <p class="sub">
+    Wikipedia, Stack Exchange, arXiv and Project Gutenberg. Running on
+    <b id="cores">…</b> Arm cores, <b>no GPU</b>, kernel <b id="kernel">…</b>.
+    Every query runs twice, once on the stock int8 index and once on ours,
+    so the difference below is measured live rather than quoted.
+  </p>
+
+  <form id="f">
+    <input id="q" placeholder="Ask something, in your own words" autofocus>
+    <button id="go">Search</button>
+  </form>
+
+  <div class="ex">
+    Try:
+    <a data-q="why do neural networks need activation functions">activation functions</a>
+    <a data-q="how do sailing ships travel against the wind">sailing against the wind</a>
+    <a data-q="what causes the northern lights">northern lights</a>
+  </div>
+
+  <div class="race" id="race" hidden>
+    <div class="lane">
+      <span class="name">FAISS int8</span>
+      <div class="track"><div class="bar slow" id="bar-faiss"></div></div>
+      <span class="ms" id="ms-faiss">—</span>
+    </div>
+    <div class="lane">
+      <span class="name">sq8 (this work)</span>
+      <div class="track"><div class="bar fast" id="bar-sq8"></div></div>
+      <span class="ms" id="ms-sq8">—</span>
+    </div>
+  </div>
+  <p class="verdict" id="verdict" hidden></p>
+
+  <div id="results"></div>
+
+  <footer>
+    Passage text from Wikipedia and Stack Exchange is licensed
+    <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a>;
+    arXiv abstracts are shown under arXiv's terms; Project Gutenberg texts are
+    public domain. Text has been split into passages, which counts as
+    modification. Each result links to its source.
+    Search index and kernels:
+    <a href="https://github.com/mark124/armscope">github.com/mark124/armscope</a>, MIT.
+  </footer>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+fetch('/api/manifest').then(r => r.json()).then(m => {
+  $('n').textContent = m.n.toLocaleString();
+  $('cores').textContent = m.cores;
+  $('kernel').textContent = m.kernel;
+});
+
+function render(d) {
+  const slow = d.timing_ms.faiss, fast = d.timing_ms.sq8;
+  $('race').hidden = false;
+  const max = Math.max(slow || 0, fast || 0) || 1;
+  $('bar-faiss').style.width = slow ? (slow / max * 100) + '%' : '0';
+  $('bar-sq8').style.width = fast ? (fast / max * 100) + '%' : '0';
+  $('ms-faiss').textContent = slow ? slow.toFixed(1) + ' ms' : 'n/a';
+  $('ms-sq8').textContent = fast ? fast.toFixed(1) + ' ms' : 'n/a';
+
+  if (d.speedup) {
+    const same = d.same_results === null ? '' :
+      ` Both returned ${Math.round(d.same_results * 100)}% the same passages.`;
+    $('verdict').hidden = false;
+    $('verdict').innerHTML =
+      `<b>${d.speedup}x faster</b> on this query, same machine, same moment.` +
+      same + ` Embedding the query took ${d.timing_ms.embed.toFixed(1)} ms and is
+      common to both.`;
+  }
+
+  $('results').innerHTML = d.results.map(r => `
+    <div class="r">
+      <div class="t"><span class="tag">${r.source}</span>
+        <a href="${r.url}" target="_blank" rel="noopener">${
+          r.title || 'untitled'}</a></div>
+      <div class="p">${r.text.replace(/[<>&]/g, c =>
+        ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</div>
+    </div>`).join('');
+}
+
+async function run(q) {
+  if (!q.trim()) return;
+  $('go').disabled = true;
+  $('go').textContent = 'Searching…';
+  try {
+    const r = await fetch('/api/search?q=' + encodeURIComponent(q));
+    render(await r.json());
+  } finally {
+    $('go').disabled = false;
+    $('go').textContent = 'Search';
+  }
+}
+
+$('f').addEventListener('submit', e => { e.preventDefault(); run($('q').value); });
+document.querySelectorAll('.ex a').forEach(a =>
+  a.addEventListener('click', () => { $('q').value = a.dataset.q; run(a.dataset.q); }));
+</script>
+</body>
+</html>

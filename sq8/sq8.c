@@ -251,6 +251,22 @@ sq8_index_t *sq8_build(const float *vectors, int64_t n, int d) {
     return idx;
 }
 
+sq8_index_t *sq8_from_codes(const int8_t *codes, const float *scales,
+                            int64_t n, int d) {
+    sq8_index_t *idx = calloc(1, sizeof(*idx));
+    if (!idx) return NULL;
+    idx->n = n;
+    idx->d = d;
+    idx->dpad = pad_dim(d);
+    size_t bytes = (size_t)n * idx->dpad;
+    idx->codes = aligned_alloc(64, (bytes + 63) & ~(size_t)63);
+    idx->scales = malloc((size_t)n * sizeof(float));
+    if (!idx->codes || !idx->scales) { sq8_free(idx); return NULL; }
+    memcpy(idx->codes, codes, bytes);
+    memcpy(idx->scales, scales, (size_t)n * sizeof(float));
+    return idx;
+}
+
 void sq8_free(sq8_index_t *idx) {
     if (!idx) return;
     free(idx->codes);
