@@ -130,19 +130,27 @@ def main() -> None:
           f"({dt_b:.1f}s)")
 
     # optimum ships an arm64 preset for dynamic quantization, which is the
-    # configuration that actually reaches i8mm on this CPU.
-    quantizer = ORTQuantizer.from_pretrained(out_dir)
-    qconfig = AutoQuantizationConfig.arm64(is_static=False, per_channel=False)
-    qdir = pathlib.Path("onnx_model_int8")
-    quantizer.quantize(save_dir=qdir, quantization_config=qconfig)
-    ort_int8 = ORTModelForFeatureExtraction.from_pretrained(
-        qdir, file_name="model_quantized.onnx")
-
-    emb_c, dt_c = run_ort(ort_int8, corpus)
-    q_c, _ = run_ort(ort_int8, queries)
-    results.append(("C  ONNX Runtime int8 (arm64)", len(corpus) / dt_c, emb_c))
-    print(f"  C  ORT int8         {len(corpus) / dt_c:8.1f} chunks/s  "
-          f"({dt_c:.1f}s)")
+    # configuration that reaches i8mm on this CPU. per_channel is the setting
+    # that decides whether the whole tensor shares one scale or every output
+    # channel gets its own. It is the difference between a usable embedder and
+    # one that quietly returns different neighbours.
+    query_sets = [q_a, q_b]
+    for tag, per_channel in (("int8 per-tensor", False), ("int8 per-channel", True)):
+        try:
+            quantizer = ORTQuantizer.from_pretrained(out_dir)
+            qconfig = AutoQuantizationConfig.arm64(is_static=False,
+                                                   per_channel=per_channel)
+            qdir = pathlib.Path(f"onnx_int8_{'pc' if per_channel else 'pt'}")
+            quantizer.quantize(save_dir=qdir, quantization_config=qconfig)
+            m = ORTModelForFeatureExtraction.from_pretrained(
+                qdir, file_name="model_quantized.onnx")
+            emb, dt = run_ort(m, corpus)
+            qq, _ = run_ort(m, queries)
+            results.append((f"ORT {tag} (arm64)", len(corpus) / dt, emb))
+            query_sets.append(qq)
+            print(f"  ORT {tag:<20} {len(corpus) / dt:8.1f} chunks/s  ({dt:.1f}s)")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  ORT {tag} failed: {str(exc)[:100]}")
 
     # ---- quality: does it still retrieve the same things? ----------------
     print("\n" + "=" * 78)
@@ -153,9 +161,11 @@ def main() -> None:
           f"{'cos vs A':>9} {'top10 agree':>12}")
     print("  " + "-" * 80)
     base = results[0][1]
-    for (label, cps, emb), q in zip(results, (q_a, q_b, q_c)):
+    scored = []
+    for (label, cps, emb), q in zip(results, query_sets):
         cos = float(np.mean(np.sum(emb * emb_a, axis=1)))
         agree = overlap(neighbours(emb, q, K), gt)
+        scored.append((label, cps, cos, agree))
         print(f"  {label:<36} {cps:>10,.1f} {cps / base:>8.2f}x "
               f"{cos:>9.4f} {agree:>11.3f}")
 
@@ -164,11 +174,27 @@ def main() -> None:
     print("\n  A path that is fast but disagrees with the baseline has not been")
     print("  optimized, it has been changed. Both columns have to hold.")
 
-    fastest = max(results, key=lambda r: r[1])
-    print(f"\n  >> fastest: {fastest[0]} at {fastest[1] / base:.2f}x")
-    print(f"  >> 60,000 chunks would take "
-          f"{60000 / fastest[1] / 60:.1f} min vs "
-          f"{60000 / base / 60:.1f} min today")
+    # Usable means: meaningfully faster AND still finding the same things.
+    # 0.95 agreement is the bar; below that the index has changed, not sped up.
+    BAR = 0.95
+    usable = [s for s in scored if s[3] >= BAR and s[1] > base]
+    print(f"\n  Usable = at least {BAR:.2f} neighbour agreement AND faster "
+          f"than the default.")
+    if usable:
+        best = max(usable, key=lambda s: s[1])
+        print(f"  >> {best[0]} at {best[1] / base:.2f}x, "
+              f"agreement {best[3]:.3f}")
+        print(f"  >> 60,000 chunks: {60000 / best[1] / 60:.1f} min "
+              f"vs {60000 / base / 60:.1f} min today")
+    else:
+        print("  >> NOTHING QUALIFIES. Every faster path changes retrieval")
+        print("     results beyond the bar. Report that, do not ship a")
+        print("     speedup that silently swaps a third of the neighbours.")
+    fastest = max(scored, key=lambda s: s[1])
+    if fastest[3] < BAR:
+        print(f"\n  Note the fastest path ({fastest[0]}, {fastest[1] / base:.2f}x)")
+        print(f"  agrees with the baseline on only {fastest[3]:.1%} of "
+              f"neighbours. Speed without that column is a false claim.")
 
 
 if __name__ == "__main__":
