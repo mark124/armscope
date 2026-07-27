@@ -1,0 +1,46 @@
+name: scale
+
+# At 60k vectors both FAISS and sq8 answer in under a millisecond, so a
+# side-by-side demo would show two instant results and prove nothing. This
+# finds the corpus size where the difference becomes visible to a person,
+# which decides whether the planned demo is viable at all.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "bench/scale.py"
+      - ".github/workflows/scale.yml"
+
+jobs:
+  scale:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Host and memory budget
+        run: |
+          python tools/cpuid.py
+          free -g
+
+      - name: Build sq8
+        working-directory: sq8
+        run: |
+          gcc -O3 -fPIC -shared -fopenmp -march=armv8.2-a+dotprod+i8mm \
+            -o libsq8.so sq8.c -lm
+
+      - name: Install
+        run: pip install --quiet faiss-cpu numpy
+
+      - name: Scale sweep
+        run: python bench/scale.py | tee scale.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scale
+          path: scale.txt
