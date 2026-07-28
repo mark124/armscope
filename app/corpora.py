@@ -48,6 +48,9 @@ ATTRIBUTION = {
 _TAG = re.compile(r"<[^>]+>")
 _BLOCK = re.compile(r"</(p|div|li|pre|blockquote|h[1-6])\s*>|<br\s*/?>",
                     re.IGNORECASE)
+_PRE = re.compile(r"<pre\b.*?</pre>", re.IGNORECASE | re.DOTALL)
+_SPACE_BEFORE = re.compile(r"\s+([,.;:!?%)\]])")
+_SPACE_AFTER = re.compile(r"([(\[])\s+")
 
 
 def strip_html(html: str) -> str:
@@ -55,16 +58,78 @@ def strip_html(html: str) -> str:
     than useless: "<p>" and "</blockquote>" carry no meaning but do consume
     tokens, and the raw tags would show up in the UI.
 
+    Fenced code goes entirely. A shell transcript or a G-code listing embeds to
+    noise, and this index is meant to be searched in words.
+
     Block-level tags become paragraph breaks first, because chunk() splits on
     blank lines and would otherwise glue a whole answer into one passage.
+    Dropping the rest of the tags leaves a space in their place, so the
+    punctuation that hugged them has to be pulled back in afterwards, or every
+    sentence that ended on a link reads "...into the air ."
     """
-    text = _BLOCK.sub("\n\n", html)
+    text = _PRE.sub("\n\n", html)
+    text = _BLOCK.sub("\n\n", text)
     text = _TAG.sub(" ", text)
     text = unescape(text)
+    text = _SPACE_BEFORE.sub(r"\1", text)
+    text = _SPACE_AFTER.sub(r"\1", text)
     return re.sub(r"[ \t]+", " ", text)
 
 
+_ITALIC = re.compile(r"_([^_\n]{1,80})_")
+_FOOTNOTE = re.compile(r"\[\d{1,3}\]")
+# Editorial markers the transcriber inserts. Named explicitly rather than
+# dropping every bracket, because books use brackets for real interpolations.
+_EDITORIAL = re.compile(
+    r"\[\s*(?:illustration|sidenote|footnote|transcriber|blank page|greek"
+    r"|hebrew|music)[^\]]*\]", re.IGNORECASE)
+_SUPERSCRIPT = re.compile(r"(\w)\{(\w{1,3})\}")
+# A hyphen at a line break, but not a suspended one. "pre- and post-war" and
+# "Mid- and far-infrared" are deliberate, and joining them yields "preand".
+_HYPHEN_BREAK = re.compile(r"([a-z])-\s+(?!(?:and|or|nor|but|to|the)\b)([a-z])")
+
+# A file written in cp1252 and decoded as latin-1 keeps its punctuation in the
+# C1 control block, where an em dash arrives as U+0097 and a curly apostrophe
+# as U+0092. They survive every text filter because they are not letters, and
+# they render as a blank box. This is the standard cp1252 mapping for that
+# range, applied only to the characters that actually appear in prose.
+_C1 = str.maketrans({
+    0x91: "'", 0x92: "'", 0x93: '"', 0x94: '"', 0x95: "*",
+    0x96: "-", 0x97: "-", 0x82: ",", 0x84: '"', 0x85: "...",
+    0x8b: "<", 0x9b: ">", 0x99: "(TM)", 0x85: "...",
+})
+
+
+def clean_plain_text(text: str) -> str:
+    """Undo the typographic conventions of a plain-text transcription.
+
+    Gutenberg files carry a century of print conventions flattened into ASCII:
+    _emphasis_ marked with underscores, footnote references as [12], archaic
+    superscripts as y{e} for the thorn form of "the". None of it means anything
+    to an embedding model, and all of it is visible in a search result.
+
+    Hyphens split across a line break are the subtle one. The source wraps at
+    seventy-odd columns, so "ready-\\nmade" becomes "ready- made" once the
+    paragraph is unwrapped, which is a word the model has never seen.
+    """
+    text = text.translate(_C1)
+    text = _EDITORIAL.sub("", text)
+    text = _FOOTNOTE.sub("", text)
+    text = _ITALIC.sub(r"\1", text)
+    text = _SUPERSCRIPT.sub(r"\1\2", text)
+    text = _HYPHEN_BREAK.sub(r"\1\2", text)
+    text = _SPACE_BEFORE.sub(r"\1", text)
+    # Spaces only. Blank lines are the paragraph boundaries chunk() splits on.
+    return re.sub(r"[ \t]{2,}", " ", text)
+
+
 _WORD = re.compile(r"[A-Za-z][A-Za-z'-]*")
+_DIVISION = re.compile(r"\b(chapter|book|part|canto|volume|act|scene)\b",
+                       re.IGNORECASE)
+# Frequent enough that three of them appear in almost any English paragraph,
+# and absent from the German and French texts that turn up in the en split.
+_FUNCTION_WORDS = {"the", "of", "and", "to", "in", "that", "is", "was", "it",
+                   "for", "with", "as", "his", "on", "be", "at", "by", "not"}
 
 
 def is_prose(passage: str) -> bool:
@@ -74,14 +139,134 @@ def is_prose(passage: str) -> bool:
     lists of names in capitals, page-number tables, advertising matter. They
     embed to nothing coherent, so they cannot be found deliberately but can
     still surface as noise.
+
+    Mean sentence length is what catches a list a capitalisation test misses.
+    "BOOK I. THE TIME, THE PLACE, AND THE MEN. Chapter 1.I The Brothers." is
+    title case, not capitals, and a cast list reads as ordinary sentences:
+    "Sally and Apache, the Elk Totem Burros. Bill Duane and his Town Gang."
+    Both run to six or seven words per full stop where real prose runs to
+    fifteen or more. The threshold costs us some clipped dialogue, which is a
+    fair trade for not indexing the front matter of every book.
     """
+    # Tables drawn in ASCII, and the dot leaders of an index entry. Neither
+    # survives being flattened into a single line of prose.
+    if passage.count("|") >= 3 or ".." in passage:
+        return False
+
     words = _WORD.findall(passage)
     if len(words) < 20:
         return False
+
+    lower = {w.lower() for w in words}
+    if len(lower & _FUNCTION_WORDS) < 3:
+        return False
+
     caps = sum(1 for w in words if len(w) > 1 and w.isupper())
     if caps / len(words) > 0.2:
         return False
-    return passage.count(".") + passage.count("?") + passage.count("!") >= 2
+
+    # One long sentence is ordinary prose; none at all is a heading.
+    stops = passage.count(".") + passage.count("?") + passage.count("!")
+    if stops < 1:
+        return False
+    if len(words) / stops < 9:
+        return False
+    if title_case_ratio(passage) > 0.35:
+        return False
+
+    return len(_DIVISION.findall(passage)) < 2
+
+
+_SENTENCE_START = re.compile(r"(?:^|[.!?]\s*[\"'(]?\s*)([A-Za-z])")
+
+
+def title_case_ratio(passage: str) -> float:
+    """Share of words that are capitalised without starting a sentence.
+
+    This is what separates a cast list from a paragraph that happens to be a
+    list. "For provisions we had flour, salt, sugar, bacon" and "the Game
+    Warden, the Forest Ranger, the Cow-puncher" have the same comma density and
+    the same sentence length; only one of them capitalises almost every noun.
+    Ordinary narrative sits near a tenth even when it is thick with names.
+    """
+    words = _WORD.findall(passage)
+    if not words:
+        return 0.0
+    initial = {m.group(1) and m.start(1) for m in _SENTENCE_START.finditer(passage)}
+    upper = 0
+    counted = 0
+    for m in re.finditer(r"[A-Za-z][A-Za-z'-]*", passage):
+        if m.start() in initial:
+            continue
+        counted += 1
+        w = m.group()
+        if w[0].isupper() and not w.isupper():
+            upper += 1
+    return upper / counted if counted else 0.0
+
+
+_HOST = re.compile(r"^(https?://)([^/]+)")
+
+
+def _lower_host(url: str) -> str:
+    return _HOST.sub(lambda m: m.group(1) + m.group(2).lower(), url)
+
+
+_SYMBOLS = set("{}[]<>;=|\\/*&^~`$")
+# A quoted key against a value. Prose does not contain "name":"value", and a
+# pasted JSON payload is otherwise light on the braces the density test counts.
+_KEY_VALUE = re.compile(r'"\s*:\s*["\d{\[]')
+
+
+def looks_like_code(passage: str) -> bool:
+    """Code that was tagged inline rather than fenced, so strip_html kept it.
+
+    Most Stack Overflow answers mix prose and code, and a sentence containing
+    one identifier is worth indexing. A passage that is mostly braces and
+    semicolons is not: it embeds nowhere near the words someone would use to
+    look for it, and it reads as garbage in a result list.
+    """
+    if len(passage) < 40:
+        return False
+    if _KEY_VALUE.search(passage):
+        return True
+    symbols = sum(1 for c in passage if c in _SYMBOLS)
+    return symbols / len(passage) > 0.04
+
+
+def trim(text: str, limit: int) -> str:
+    """Collapse to one line and cut on a word boundary."""
+    flat = " ".join(text.split())
+    if len(flat) <= limit:
+        return flat
+    return f"{flat[:limit].rsplit(' ', 1)[0]}..."
+
+
+def headline(text: str, limit: int = 110, ask: int = 35) -> str:
+    """A one-line label for a body of text that has no title field.
+
+    A Stack Exchange question usually opens with a paragraph of setup and only
+    then asks the thing, so the first sentence is often "I have a Prusa i3 and
+    an MK8 extruder." The sentence carrying the question mark is the one a
+    reader recognises.
+
+    Except when it does not carry anything at all. Posts routinely close on
+    "Any clues?" or "What could the problem be?", and a result list of those is
+    worse than no titles, so a question that short is passed over for the
+    opening sentence, which at least names the subject. Whatever is chosen gets
+    cut on a word boundary, because a title severed mid-word reads as a bug in
+    the search engine.
+    """
+    flat = " ".join(text.split())
+    sentences = re.split(r"(?<=[.!?])\s+", flat)
+    asked = [s for s in sentences if s.endswith("?")]
+    pick = max(asked, key=len) if asked else ""
+    if len(pick) < ask:
+        pick = sentences[0] if sentences else flat
+    if len(pick) <= limit:
+        return pick
+    cut = pick[:limit].rsplit(" ", 1)[0]
+    return f"{cut}..."
 
 
 def chunk(text: str, target: int = 480, min_len: int = 120) -> Iterator[str]:
@@ -114,17 +299,38 @@ def chunk(text: str, target: int = 480, min_len: int = 120) -> Iterator[str]:
 # Adapters. Each is a generator so a 20M-passage corpus never lands in RAM.
 # --------------------------------------------------------------------------
 
+SEED = 20260728
+
+
+def spread(ds, buffer: int):
+    """Read the corpus in shuffled shard order rather than front to back.
+
+    Every one of these datasets is stored in its natural order, and we stop
+    long before the end of any of them. Read straight through and the arXiv
+    slice is entirely 2007, the Stack Exchange slice is entirely 3D printing,
+    and Gutenberg is whatever happened to be catalogued first. None of that is
+    visible in the passage text, which is what makes it worth guarding against:
+    the corpus would look fine and answer only a narrow band of questions.
+
+    Shard order is the part that matters here. The row buffer is deliberately
+    small, since a Gutenberg row is an entire book.
+    """
+    return ds.shuffle(seed=SEED, buffer_size=buffer)
+
+
 def wikipedia(limit: int | None = None, lang: str = "en") -> Iterator[Passage]:
     """Wikipedia via the HuggingFace dump mirror, streamed."""
     from datasets import load_dataset
 
-    ds = load_dataset("wikimedia/wikipedia", f"20231101.{lang}",
-                      split="train", streaming=True)
+    ds = spread(load_dataset("wikimedia/wikipedia", f"20231101.{lang}",
+                             split="train", streaming=True), 5000)
     n = 0
     for row in ds:
         title = row.get("title") or ""
         url = row.get("url") or ""
-        for piece in chunk(row.get("text") or ""):
+        # The dump's wikitext stripping leaves a gap where a link target was
+        # dropped, so sentences arrive as "defeated , 3-1 in games played".
+        for piece in chunk(_SPACE_BEFORE.sub(r"\1", row.get("text") or "")):
             yield Passage(piece, title, url, "wikipedia", LICENCES["wikipedia"])
             n += 1
             if limit and n >= limit:
@@ -143,12 +349,14 @@ def stackexchange(limit: int | None = None) -> Iterator[Passage]:
     """
     from datasets import load_dataset
 
-    ds = load_dataset("HuggingFaceH4/stack-exchange-preferences",
-                      split="train", streaming=True)
+    ds = spread(load_dataset("HuggingFaceH4/stack-exchange-preferences",
+                             split="train", streaming=True), 2000)
     n = 0
     for row in ds:
         meta = row.get("metadata") or []
-        url = meta[0] if meta else ""
+        # Stack Overflow rows carry the host capitalised, which resolves but
+        # looks like a broken link next to every other result.
+        url = _lower_host(meta[0]) if meta else ""
         if not url or ".meta." in url:
             continue
 
@@ -162,8 +370,10 @@ def stackexchange(limit: int | None = None) -> Iterator[Passage]:
         if not best.get("selected") and (best.get("pm_score") or 0) < 1:
             continue
 
-        title = " ".join(strip_html(row.get("question") or "").split())[:120]
+        title = headline(strip_html(row.get("question") or ""))
         for piece in chunk(strip_html(best.get("text") or "")):
+            if looks_like_code(piece):
+                continue
             yield Passage(piece, title, url, "stackexchange",
                           LICENCES["stackexchange"])
             n += 1
@@ -175,8 +385,8 @@ def arxiv(limit: int | None = None) -> Iterator[Passage]:
     """arXiv abstracts. Short and self-contained, so one chunk each."""
     from datasets import load_dataset
 
-    ds = load_dataset("gfissore/arxiv-abstracts-2021", split="train",
-                      streaming=True)
+    ds = spread(load_dataset("gfissore/arxiv-abstracts-2021", split="train",
+                             streaming=True), 10000)
     n = 0
     for row in ds:
         abstract = " ".join((row.get("abstract") or "").split())
@@ -222,7 +432,8 @@ def gutenberg(limit: int | None = None) -> Iterator[Passage]:
     """
     from datasets import load_dataset
 
-    ds = load_dataset("manu/project_gutenberg", split="en", streaming=True)
+    ds = spread(load_dataset("manu/project_gutenberg", split="en",
+                             streaming=True), 50)
     n = 0
     for row in ds:
         raw = row.get("text") or ""
@@ -232,8 +443,10 @@ def gutenberg(limit: int | None = None) -> Iterator[Passage]:
 
         head = raw[:2000]
         m = _PG_TITLE.search(head)
-        title = " ".join(m.group(1).split())[:120] if m else "Untitled"
-        title = re.sub(r"^[,\s]+", "", title)
+        # Not headline(): the header is already one line, and splitting it on
+        # sentences would cut "by Edwin L. Sabin" down to "by Edwin L."
+        title = trim(m.group(1), 120) if m else "Untitled"
+        title = re.sub(r"^[,\s]+|[,;:\s]+$", "", title)
 
         start = _PG_START.search(raw)
         body = raw[start.end():] if start else raw
@@ -245,7 +458,7 @@ def gutenberg(limit: int | None = None) -> Iterator[Passage]:
         # costs a page of real text and saves indexing a list of book prices.
         body = body[min(5000, len(body) // 10):]
 
-        for piece in chunk(body):
+        for piece in chunk(clean_plain_text(body)):
             if _PG_NOISE.search(piece) or not is_prose(piece):
                 continue
             yield Passage(piece, title, url, "gutenberg",
