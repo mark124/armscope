@@ -1,0 +1,102 @@
+name: app
+
+# End to end on real Arm silicon: pull four public corpora, embed them, build
+# the index, serve it, and query the running server.
+#
+# This exists because the demo box is a one-shot. The index build there runs
+# overnight, and finding out afterwards that the server cannot load what the
+# builder wrote is a wasted day. The free Neoverse N2 runner is the same
+# architecture, so everything except the corpus size is identical.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "sq8/**"
+      - ".github/workflows/app.yml"
+
+jobs:
+  filters:
+    name: ingestion filters
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Unit tests, no network
+        working-directory: app
+        run: python test_corpora.py
+
+  end_to_end:
+    name: build and serve
+    needs: filters
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Host
+        run: python3 tools/cpuid.py
+
+      - name: Build sq8
+        working-directory: sq8
+        run: |
+          gcc -O3 -fPIC -shared -fopenmp -march=armv8.2-a+dotprod+i8mm \
+            -o libsq8.so sq8.c -lm
+          ls -l libsq8.so
+
+      - name: Install
+        run: |
+          pip install --quiet faiss-cpu numpy datasets fastapi uvicorn \
+            sentence-transformers "optimum[onnxruntime]"
+
+      - name: Build a small index from all four corpora
+        working-directory: app
+        run: |
+          python build_index.py --out ../index --per-corpus 2500 --batch 64 \
+            | tee ../build.log
+          ls -l ../index
+
+      - name: Serve it
+        working-directory: app
+        env:
+          INDEX_DIR: ${{ github.workspace }}/index
+          SQ8_LIB: ${{ github.workspace }}/sq8/libsq8.so
+        run: |
+          python serve.py > ../serve.log 2>&1 &
+          echo $! > ../serve.pid
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8000/api/manifest > /dev/null; then
+              echo "up after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "server never came up"; cat ../serve.log; exit 1
+
+      - name: Query the running server
+        working-directory: app
+        run: python smoke.py | tee ../smoke.log
+
+      - name: Server log
+        if: always()
+        run: cat serve.log || true
+
+      - name: Stop
+        if: always()
+        run: kill "$(cat serve.pid)" 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: app-end-to-end
+          path: |
+            build.log
+            smoke.log
+            serve.log
+            index/manifest.json

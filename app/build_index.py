@@ -14,9 +14,8 @@ Written files:
   manifest.json dimensions, counts, model, build settings
 
 Embedding uses ONNX Runtime int8 with per-channel quantization, which measured
-2.2x faster than PyTorch on Neoverse N2. Per-tensor quantization was the same
-speed and cost far more retrieval quality (0.670 vs 0.838 neighbour agreement
-against fp32), so per-channel is not optional here.
+2.2x faster than PyTorch on Neoverse N2. The encoder lives in embedder.py
+because the server has to use exactly the same one.
 """
 
 from __future__ import annotations
@@ -28,70 +27,7 @@ import time
 
 import numpy as np
 
-PAD = 16
-
-
-def pad_dim(d: int) -> int:
-    return (d + PAD - 1) // PAD * PAD
-
-
-def quantize(vecs: np.ndarray, dpad: int) -> tuple[np.ndarray, np.ndarray]:
-    """Per-vector symmetric int8, matching sq8's own scheme exactly."""
-    amax = np.abs(vecs).max(axis=1)
-    scales = (amax / 127.0).astype(np.float32)
-    inv = np.where(scales > 0, 1.0 / np.maximum(scales, 1e-30), 0.0)
-    q = np.rint(vecs * inv[:, None]).clip(-127, 127).astype(np.int8)
-    if dpad > vecs.shape[1]:
-        q = np.pad(q, ((0, 0), (0, dpad - vecs.shape[1])))
-    return np.ascontiguousarray(q), scales
-
-
-class Embedder:
-    """int8 ONNX Runtime, per-channel. Falls back to PyTorch if export fails."""
-
-    def __init__(self, model: str, out: pathlib.Path):
-        self.dim = None
-        try:
-            from optimum.onnxruntime import (ORTModelForFeatureExtraction,
-                                             ORTQuantizer)
-            from optimum.onnxruntime.configuration import AutoQuantizationConfig
-            from transformers import AutoTokenizer
-
-            fp32_dir = out / "_onnx_fp32"
-            int8_dir = out / "_onnx_int8"
-            if not (int8_dir / "model_quantized.onnx").exists():
-                m = ORTModelForFeatureExtraction.from_pretrained(model,
-                                                                 export=True)
-                m.save_pretrained(fp32_dir)
-                q = ORTQuantizer.from_pretrained(fp32_dir)
-                q.quantize(save_dir=int8_dir,
-                           quantization_config=AutoQuantizationConfig.arm64(
-                               is_static=False, per_channel=True))
-            self.tok = AutoTokenizer.from_pretrained(model)
-            self.model = ORTModelForFeatureExtraction.from_pretrained(
-                int8_dir, file_name="model_quantized.onnx")
-            self.backend = "onnxruntime-int8-per-channel"
-        except Exception as exc:  # noqa: BLE001
-            print(f"  ONNX path unavailable ({str(exc)[:70]}), using PyTorch")
-            from sentence_transformers import SentenceTransformer
-            self.st = SentenceTransformer(model)
-            self.model = None
-            self.backend = "pytorch-fp32"
-
-    def __call__(self, texts: list[str]) -> np.ndarray:
-        if self.model is None:
-            v = self.st.encode(texts, convert_to_numpy=True,
-                               normalize_embeddings=True,
-                               show_progress_bar=False)
-            return np.ascontiguousarray(v, dtype=np.float32)
-        enc = self.tok(texts, padding=True, truncation=True, max_length=256,
-                       return_tensors="np")
-        out = self.model(**dict(enc))
-        hidden = np.asarray(out["last_hidden_state"], dtype=np.float32)
-        mask = enc["attention_mask"][..., None].astype(np.float32)
-        pooled = (hidden * mask).sum(1) / np.clip(mask.sum(1), 1e-9, None)
-        norm = np.linalg.norm(pooled, axis=1, keepdims=True)
-        return np.ascontiguousarray(pooled / np.clip(norm, 1e-12, None))
+from embedder import DEFAULT_MODEL, Embedder, pad_dim, quantize
 
 
 def main() -> None:
@@ -100,7 +36,7 @@ def main() -> None:
     ap.add_argument("--corpora", default="wikipedia,stackexchange,arxiv,gutenberg")
     ap.add_argument("--per-corpus", type=int, default=None,
                     help="passages per corpus, omit for everything")
-    ap.add_argument("--model", default="sentence-transformers/all-MiniLM-L6-v2")
+    ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--batch", type=int, default=128)
     args = ap.parse_args()
 
@@ -111,7 +47,7 @@ def main() -> None:
     names = [n.strip() for n in args.corpora.split(",") if n.strip()]
     print(f"building from {names}, {args.per_corpus or 'all'} per corpus")
 
-    emb = Embedder(args.model, out)
+    emb = Embedder(args.model, cache=out)
     print(f"  embedder: {emb.backend}")
 
     f_codes = open(out / "codes.i8", "wb")

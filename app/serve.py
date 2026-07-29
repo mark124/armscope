@@ -24,10 +24,11 @@ import time
 
 import numpy as np
 
+from embedder import DEFAULT_MODEL, Embedder
+
 HERE = pathlib.Path(__file__).resolve().parent
 INDEX = pathlib.Path(os.environ.get("INDEX_DIR", HERE.parent / "index"))
 LIB = pathlib.Path(os.environ.get("SQ8_LIB", HERE.parent / "sq8" / "libsq8.so"))
-MODEL = os.environ.get("MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 WITH_FAISS = os.environ.get("WITH_FAISS", "1") == "1"
 
 lib = ctypes.CDLL(str(LIB))
@@ -84,13 +85,21 @@ def load():
         # Reconstruct float32 from the SAME codes so both indexes hold
         # identical data. FAISS's direct_signed mode reads int8 stored as
         # float, and it was the fastest working FAISS int8 mode we measured.
+        #
+        # In chunks, because the float32 view is four times the size of the
+        # codes: at 8M passages converting in one shot is 12.3GB of transient
+        # allocation on a box with 16GB, on top of both finished indexes.
         f = faiss.IndexScalarQuantizer(
             dim, faiss.ScalarQuantizer.QT_8bit_direct_signed,
             faiss.METRIC_INNER_PRODUCT)
-        view = codes.reshape(n, dpad)[:, :dim].astype(np.float32)
-        f.train(view)
-        f.add(view)
-        del view
+        grid = codes.reshape(n, dpad)
+        step = 100_000
+        f.train(np.ascontiguousarray(grid[:min(n, step), :dim],
+                                     dtype=np.float32))
+        for i in range(0, n, step):
+            f.add(np.ascontiguousarray(grid[i:i + step, :dim],
+                                       dtype=np.float32))
+        del grid
         faiss_idx = f
 
     del codes  # sq8 copied them; FAISS has its own
@@ -102,14 +111,18 @@ MANIFEST, IDX, DIM, DPAD, FAISS_IDX, STORE, SCALES = load()
 KERNEL = lib.sq8_kernel_name(lib.sq8_best_kernel()).decode()
 print(f"loaded {MANIFEST['n']:,} passages, dim {DIM}, kernel {KERNEL}")
 
-from sentence_transformers import SentenceTransformer  # noqa: E402
-
-ENCODER = SentenceTransformer(MODEL)
+# The model and the ONNX export both come from the index, not from a default.
+# A query encoded by a different model, or by the same model at a different
+# precision, lands off the manifold the documents were embedded onto.
+ENCODER = Embedder(MANIFEST.get("model", DEFAULT_MODEL), cache=INDEX)
+if ENCODER.backend != MANIFEST.get("embedder"):
+    print(f"  WARNING: index built with {MANIFEST.get('embedder')}, "
+          f"serving with {ENCODER.backend}; recall will be below the "
+          f"measured figure")
 
 
 def embed(q: str) -> np.ndarray:
-    v = ENCODER.encode([q], convert_to_numpy=True, normalize_embeddings=True)
-    return np.ascontiguousarray(v, dtype=np.float32)
+    return ENCODER([q])
 
 
 def search_sq8(vec: np.ndarray, k: int):
