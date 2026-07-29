@@ -312,8 +312,13 @@ def spread(ds, buffer: int):
     visible in the passage text, which is what makes it worth guarding against:
     the corpus would look fine and answer only a narrow band of questions.
 
-    Shard order is the part that matters here. The row buffer is deliberately
-    small, since a Gutenberg row is an entire book.
+    Shard order is the part that carries the spread: a shard is already a
+    random slice of the corpus, so sampling within it is representative. The
+    row buffer only decorrelates neighbours, and it is kept small on purpose.
+    A row here is a whole Wikipedia article or an entire Gutenberg book, and
+    all four readers are alive at once because the corpora are interleaved, so
+    a generous buffer is four large Arrow row groups plus four buffers of
+    documents. That combination killed the CI runner twice with 14GB free.
     """
     return ds.shuffle(seed=SEED, buffer_size=buffer)
 
@@ -323,7 +328,7 @@ def wikipedia(limit: int | None = None, lang: str = "en") -> Iterator[Passage]:
     from datasets import load_dataset
 
     ds = spread(load_dataset("wikimedia/wikipedia", f"20231101.{lang}",
-                             split="train", streaming=True), 5000)
+                             split="train", streaming=True), 500)
     n = 0
     for row in ds:
         title = row.get("title") or ""
@@ -350,7 +355,7 @@ def stackexchange(limit: int | None = None) -> Iterator[Passage]:
     from datasets import load_dataset
 
     ds = spread(load_dataset("HuggingFaceH4/stack-exchange-preferences",
-                             split="train", streaming=True), 2000)
+                             split="train", streaming=True), 300)
     n = 0
     for row in ds:
         meta = row.get("metadata") or []
@@ -386,7 +391,7 @@ def arxiv(limit: int | None = None) -> Iterator[Passage]:
     from datasets import load_dataset
 
     ds = spread(load_dataset("gfissore/arxiv-abstracts-2021", split="train",
-                             streaming=True), 10000)
+                             streaming=True), 2000)
     n = 0
     for row in ds:
         abstract = " ".join((row.get("abstract") or "").split())
@@ -433,7 +438,7 @@ def gutenberg(limit: int | None = None) -> Iterator[Passage]:
     from datasets import load_dataset
 
     ds = spread(load_dataset("manu/project_gutenberg", split="en",
-                             streaming=True), 50)
+                             streaming=True), 8)
     n = 0
     for row in ds:
         raw = row.get("text") or ""

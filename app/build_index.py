@@ -30,6 +30,21 @@ import numpy as np
 from embedder import DEFAULT_MODEL, Embedder, pad_dim, quantize
 
 
+def rss_gb() -> float:
+    """Resident set size. Printed as the build runs because the thing that
+    kills this process is memory, and it dies without a traceback when it
+    does: the kernel takes the process out and the log just stops.
+    """
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1e6
+    except OSError:
+        pass
+    return 0.0
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="index")
@@ -87,10 +102,12 @@ def main() -> None:
                                     ensure_ascii=False) + "\n")
             per_source[p.source] = per_source.get(p.source, 0) + 1
         n += len(items)
-        if n % (args.batch * 40) == 0:
+        if n % (args.batch * 10) == 0:
             rate = n / (time.perf_counter() - t0)
-            print(f"  {n:,} passages  {rate:,.0f}/s  {per_source}")
+            print(f"  {n:,} passages  {rate:,.0f}/s  rss {rss_gb():.1f}GB  "
+                  f"{per_source}", flush=True)
 
+    print(f"  rss before streaming {rss_gb():.1f}GB", flush=True)
     for p in corpora.stream(names, args.per_corpus):
         batch.append(p)
         if len(batch) >= args.batch:
