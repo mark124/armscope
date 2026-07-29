@@ -56,6 +56,29 @@ jobs:
           pip install --quiet faiss-cpu numpy datasets fastapi uvicorn \
             sentence-transformers "optimum[onnxruntime]"
 
+      # The runner died twice inside the ONNX export with only "received a
+      # shutdown signal", which is what both an OOM kill and a full disk look
+      # like from the outside. Separate step, with the numbers, so the next
+      # failure names itself.
+      - name: Headroom
+        run: |
+          free -h
+          df -h /
+          nproc
+
+      - name: Export and quantize the encoder
+        working-directory: app
+        run: |
+          mkdir -p ../index
+          /usr/bin/time -v python -c "
+          import embedder, pathlib
+          e = embedder.Embedder(cache=pathlib.Path('../index'))
+          print('backend:', e.backend)
+          print('dim:', e(['a warm up sentence']).shape)
+          " 2>&1 | tail -30
+          free -h
+          df -h /
+
       - name: Build a small index from all four corpora
         working-directory: app
         run: |
