@@ -1,0 +1,37 @@
+n=400,000  d=384  nq=512  k=10
+
+index 153.6 MB, 78.6 GB read per batch at B=1
+
+measured ceilings, one core:
+  streaming bandwidth     37.0 GB/s
+  sdot MACs from cache   37.2 G/s   ridge point 1.01 MACs per byte
+  smmla MACs from cache   46.6 G/s   ridge point 1.26 MACs per byte
+  a flat scan sits at 1.00 MACs per byte at B=1
+
+kernel     B       QPS    GB/s  G MAC/s   %bw  %cpu  vs B=1
+sdot       1     160.1    24.6     24.6   66%   66%   1.00x
+sdot       2     202.8    15.6     31.2   42%   84%   1.27x
+sdot       4     227.7     8.7     35.0   24%   94%   1.42x
+sdot       8     247.4     4.8     38.0   13%  102%   1.55x
+sdot      16     241.7     2.3     37.1    6%  100%   1.51x
+sdot      32     247.8     1.2     38.1    3%  102%   1.55x
+smmla      1     156.7    24.1     24.1   65%   52%   1.00x
+smmla      2     236.2    18.1     36.3   49%   78%   1.51x
+smmla      4     262.4    10.1     40.3   27%   86%   1.67x
+smmla      8     294.4     5.7     45.2   15%   97%   1.88x
+smmla     16     315.9     3.0     48.5    8%  104%   2.02x
+smmla     32     316.7     1.5     48.6    4%  104%   2.02x
+
+sdot: best at B=32, 1.55x over B=1
+smmla: best at B=32, 2.02x over B=1
+
+what i8mm is worth at a fixed block factor, which is the only
+way to separate the instruction from the loop order:
+  B= 1   smmla / sdot = 0.98x
+  B= 2   smmla / sdot = 1.16x
+  B= 4   smmla / sdot = 1.15x
+  B= 8   smmla / sdot = 1.19x
+  B=16   smmla / sdot = 1.31x
+  B=32   smmla / sdot = 1.28x
+
+wrote blocked.json

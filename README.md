@@ -26,16 +26,17 @@ were added to accelerate.
 384-dim, k=10, single thread, Neoverse N2:
 
 ```
-  FAISS IndexFlatIP (float32)      303.8 QPS   recall 1.000
-  FAISS QT_8bit_direct_signed      231.8 QPS   recall 0.978   <- fastest FAISS int8
-  FAISS QT_8bit_uniform             90.5 QPS   recall 0.980
+  FAISS IndexFlatIP (float32)      278.6 QPS   recall 1.000
+  FAISS QT_8bit_direct_signed      228.3 QPS   recall 0.978   <- fastest FAISS int8
+  FAISS QT_8bit_uniform             90.4 QPS   recall 0.980
   FAISS QT_8bit                     87.1 QPS   recall 0.987
-  sq8 [smmla]                    1,989.9 QPS   recall 0.981
+  sq8 [sdot]                     1,627.6 QPS   recall 0.981
+  sq8 [smmla]                    2,092.9 QPS   recall 0.981
 ```
 
-- **9.0x faster than the fastest working FAISS int8 mode, at better recall**
+- **9.2x faster than the fastest working FAISS int8 mode, at better recall**
   (0.981 vs 0.978). Approximate int8 against approximate int8, the fair fight.
-- **6.6x faster than FAISS's exact float32 search**, giving up 1.9 points of
+- **7.5x faster than FAISS's exact float32 search**, giving up 1.9 points of
   recall. Different claim, stated separately rather than blended in.
 
 ### Against PQ fast-scan, which is the real competition
@@ -97,7 +98,7 @@ ALL 4 CORES, BOTH SIDES
 **The advantage is not an artifact of a hobbled baseline.** sq8 is
 OpenMP-parallel and scales 3.7x on four cores, and the ratio holds at roughly
 8x whether both sides get one thread or the whole machine. Synthetic and real
-embedding data independently land on 8.5x and 8.6x, which is why the figure is
+embedding data independently land in the same place, which is why the figure is
 trusted.
 
 Against FAISS's default `QT_8bit`, which is the mode most people reach for, the
@@ -133,18 +134,69 @@ tool and this is not it. (Recall figures above are on synthetic Gaussian data,
 which is PQ's worst case; the real-embedding comparison is in
 `bench/bench_real_embeddings.py`.)
 
-## Where the speedup actually comes from
+## Where the speedup actually comes from, and what i8mm is really worth
 
 Two separate things, and it matters which is which:
 
 | source | gain |
 | --- | --- |
-| symmetric quantization (both sides int8) | **~6.5x** |
-| Arm i8mm/dotprod kernels on top of that | **1.31x** (smmla 1,171 vs scalar 893) |
+| symmetric quantization (both sides int8) | **~7.1x** (FAISS 228.3 to sq8 sdot 1,627.6) |
+| Arm i8mm on top of that | **1.29x** (smmla 2,092.9 vs sdot 1,627.6) |
 
-Most of the win is the design change. The Arm instructions add a real but
-smaller multiplier on top. Reporting the headline figure as "8.5x from i8mm"
+Most of the win is the design change. Reporting the headline as "9x from i8mm"
 would be false.
+
+But that second row hides something, and finding it changed the kernel.
+
+An earlier version of this table put i8mm at 1.31x by comparing SMMLA against
+SDOT. SMMLA consumes a 2x8 by 8x2 tile, so using it at all means processing two
+queries at once, while the SDOT path did one. The comparison priced the
+instruction and the loop order together and called the total "i8mm".
+
+Held at a **matched** block factor, the instruction alone measures:
+
+| queries per pass | 1 | 2 | 4 | 8 | 16 | 32 |
+| --- | --- | --- | --- | --- | --- | --- |
+| smmla / sdot | **0.98x** | 1.16x | 1.15x | 1.19x | **1.31x** | 1.28x |
+
+**On a flat scan, i8mm is worth nothing at all.** It only pays once the loop
+gives it enough work per byte to stay fed.
+
+![i8mm across block factors](docs/block-sweep.svg)
+
+### Why: the scan was starving the instruction
+
+A flat int8 scan reads the whole index per query and does one multiply-
+accumulate per byte read, an arithmetic intensity of 1. Both ceilings were
+measured on the same core in the same run rather than quoted from a datasheet
+([`bench/blocked.py`](bench/blocked.py)):
+
+| measured on one Neoverse N2 core | |
+| --- | --- |
+| streaming bandwidth | 37.0 GB/s |
+| sdot MACs, cache-resident | 37.2 G/s, ridge at 1.01 MACs/byte |
+| smmla MACs, cache-resident | 46.6 G/s, ridge at 1.26 MACs/byte |
+
+![roofline](docs/roofline.svg)
+
+**We got the diagnosis wrong before measuring it, and the measurement says so.**
+The prediction was that the scan sat at about 95% of the bandwidth roof. It sits
+at 65%, right at the knee rather than against the wall. The fix worked anyway:
+blocking B queries into one pass leaves bytes read unchanged and multiplies work
+per byte by B.
+
+| queries per pass | 1 | 2 | 4 | 8 | 16 | 32 |
+| --- | --- | --- | --- | --- | --- | --- |
+| sdot QPS | 160.1 | 202.8 | 227.7 | 247.4 | 241.7 | 247.8 |
+| smmla QPS | 156.7 | 236.2 | 262.4 | 294.4 | 315.9 | 316.7 |
+
+**1.55x for SDOT, 2.02x for SMMLA**, one core, 400k vectors. The default block
+factor is 16, where the curve flattens.
+
+Two honest limits on that number. The win is size-dependent: at 60k vectors the
+index is 23MB and largely cache-resident, so blocking is worth only 1.05x, while
+at 400k it is 153MB and worth 2.02x. And it is a batch result: a server
+answering one query at a time runs at B=1 and gets none of it.
 
 ## What this was red-teamed against
 

@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 448" width="760" height="448" role="img">
+<style>
+  :root {
+    --surface: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --s1: #2a78d6; --s2: #eb6834;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --surface: #1a1a19; --ink: #ffffff; --ink2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --s1: #3987e5; --s2: #d95926;
+    }
+  }
+  .bg { fill: var(--surface); }
+  text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .title { font-size: 15px; font-weight: 600; fill: var(--ink); }
+  .sub { font-size: 12px; fill: var(--ink2); }
+  .tick { font-size: 11px; fill: var(--muted);
+          font-variant-numeric: tabular-nums; }
+  .axlab { font-size: 11.5px; fill: var(--ink2); }
+  .note { font-size: 11px; fill: var(--ink2); }
+  .lead { font-size: 11px; font-weight: 600; fill: var(--ink); }
+  .grid { stroke: var(--grid); stroke-width: 1; }
+  .axis { stroke: var(--axis); stroke-width: 1; }
+  .roof { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+  .s1 { stroke: var(--s1); }
+  .s2 { stroke: var(--s2); }
+  .f1 { fill: var(--s1); }
+  .f2 { fill: var(--s2); }
+  .line { fill: none; stroke-width: 2; stroke-linejoin: round;
+          stroke-linecap: round; }
+  .ring { stroke: var(--surface); stroke-width: 2; }
+</style>
+<rect class="bg" x="0" y="0" width="760" height="448"/><text class="title" x="74" y="26">i8mm is worth nothing until the loop gives it enough to do</text><text class="sub" x="74" y="45">queries sharing one pass over the database. Same instruction, same data, only the loop order changes.</text><line class="grid" x1="74" y1="390.0" x2="734" y2="390.0"/><text class="tick" x="64" y="394.0" text-anchor="end">0</text><line class="grid" x1="74" y1="310.2" x2="734" y2="310.2"/><text class="tick" x="64" y="314.2" text-anchor="end">100</text><line class="grid" x1="74" y1="230.5" x2="734" y2="230.5"/><text class="tick" x="64" y="234.5" text-anchor="end">200</text><line class="grid" x1="74" y1="150.7" x2="734" y2="150.7"/><text class="tick" x="64" y="154.7" text-anchor="end">300</text><text class="tick" x="102.2" y="410" text-anchor="middle">1</text><text class="tick" x="222.6" y="410" text-anchor="middle">2</text><text class="tick" x="343.0" y="410" text-anchor="middle">4</text><text class="tick" x="463.4" y="410" text-anchor="middle">8</text><text class="tick" x="583.8" y="410" text-anchor="middle">16</text><text class="tick" x="704.2" y="410" text-anchor="middle">32</text><line class="axis" x1="74" y1="390" x2="734" y2="390"/><text class="axlab" x="404" y="434" text-anchor="middle">queries blocked into one pass over the database</text><text class="axlab" x="-241" y="16" transform="rotate(-90)" text-anchor="middle">queries per second, one core</text><path class="line s1" d="M102.2 262.3 L222.6 228.2 L343.0 208.4 L463.4 192.7 L583.8 197.2 L704.2 192.3"/><circle class="f1 ring" cx="102.2" cy="262.3" r="4.5"/><circle class="f1 ring" cx="222.6" cy="228.2" r="4.5"/><circle class="f1 ring" cx="343.0" cy="208.4" r="4.5"/><circle class="f1 ring" cx="463.4" cy="192.7" r="4.5"/><circle class="f1 ring" cx="583.8" cy="197.2" r="4.5"/><circle class="f1 ring" cx="704.2" cy="192.3" r="4.5"/><path class="line s2" d="M102.2 265.1 L222.6 201.7 L343.0 180.7 L463.4 155.2 L583.8 138.1 L704.2 137.5"/><circle class="f2 ring" cx="102.2" cy="265.1" r="4.5"/><circle class="f2 ring" cx="222.6" cy="201.7" r="4.5"/><circle class="f2 ring" cx="343.0" cy="180.7" r="4.5"/><circle class="f2 ring" cx="463.4" cy="155.2" r="4.5"/><circle class="f2 ring" cx="583.8" cy="138.1" r="4.5"/><circle class="f2 ring" cx="704.2" cy="137.5" r="4.5"/><text class="lead" x="102.2" y="248.3" text-anchor="middle">0.98x</text><text class="lead" x="583.8" y="124.1" text-anchor="middle">1.31x</text><text class="note" x="94.2" y="291.1">i8mm buys nothing on a flat scan</text><line class="line s1" x1="74" y1="70" x2="94" y2="70"/><circle class="f1 ring" cx="84" cy="70" r="4"/><text class="note" x="102" y="74">sdot</text><line class="line s2" x1="224" y1="70" x2="244" y2="70"/><circle class="f2 ring" cx="234" cy="70" r="4"/><text class="note" x="252" y="74">smmla (i8mm)</text></svg>
