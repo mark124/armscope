@@ -1,0 +1,63 @@
+name: roofline
+
+# Does blocking queries convert i8mm's small win into a real one?
+#
+# Our published number is that i8mm was worth 1.31x over SDOT, which is a poor
+# return on a dedicated matrix instruction. The stated reason is that a flat
+# int8 scan does one multiply-accumulate per byte read, so it is pinned against
+# memory bandwidth and SMMLA spends its time waiting. This tests that reading
+# directly, by raising the work done per byte and seeing whether throughput
+# follows, with both ceilings measured on the same core.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "sq8/**"
+      - "bench/blocked.py"
+      - ".github/workflows/roofline.yml"
+
+jobs:
+  correctness:
+    name: block factor changes nothing but speed
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        working-directory: sq8
+        run: |
+          gcc -O2 -Wall -Wextra -fopenmp -march=armv8.2-a+dotprod+i8mm \
+            -o test_sq8 test_sq8.c sq8.c -lm
+      - name: Run
+        working-directory: sq8
+        run: ./test_sq8
+
+  sweep:
+    name: sweep the block factor
+    needs: correctness
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Host
+        run: python3 tools/cpuid.py
+      - name: Build shared library
+        working-directory: sq8
+        run: |
+          gcc -O3 -fPIC -shared -fopenmp -march=armv8.2-a+dotprod+i8mm \
+            -o libsq8.so sq8.c -lm
+      - name: Install
+        run: pip install --quiet numpy
+      - name: Sweep
+        run: python bench/blocked.py 400000 | tee roofline.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: roofline
+          path: |
+            roofline.txt
+            blocked.json

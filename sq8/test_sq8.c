@@ -239,6 +239,55 @@ static void test_kernels_same_results(void) {
     free(ref_ids); free(base); free(qry);
 }
 
+/* ---- 6. the query block factor is an optimization, not a behaviour ------ */
+
+static void test_block_invariance(void) {
+    printf("\nresults do not depend on the query block factor\n");
+    const int blocks[] = {1, 2, 3, 4, 8, 16, 32};
+    const int nb = (int)(sizeof(blocks) / sizeof(blocks[0]));
+    /* An odd query count and an odd n so every tail path runs: a query with
+     * no partner for the 2x2 tile, and a database vector with no pair. */
+    const int d = 192, k = 10;
+    const int64_t n = 1001, nq = 13;
+    float *base = make_vectors(n, d, 21);
+    float *qry = make_vectors(nq, d, 121);
+
+    for (int kk = SQ8_KERNEL_SDOT; kk <= SQ8_KERNEL_SMMLA; kk++) {
+        int64_t *ref = NULL;
+        int same = 1;
+        for (int bi = 0; bi < nb; bi++) {
+            sq8_force_kernel((sq8_kernel_t)kk);
+            sq8_set_query_block(blocks[bi]);
+            sq8_index_t *idx = sq8_build(base, n, d);
+            int8_t *qc = malloc((size_t)nq * idx->dpad);
+            float *qs = malloc((size_t)nq * sizeof(float));
+            sq8_quantize_queries(qry, nq, d, qc, qs);
+            int64_t *ids = malloc((size_t)nq * k * sizeof(int64_t));
+            float *sc = malloc((size_t)nq * k * sizeof(float));
+            sq8_search_ip(idx, qc, qs, nq, k, ids, sc);
+
+            if (!ref) {
+                ref = ids;
+            } else {
+                for (int64_t i = 0; i < nq * k; i++)
+                    if (ids[i] != ref[i]) same = 0;
+                free(ids);
+            }
+            free(qc); free(qs); free(sc);
+            sq8_free(idx);
+        }
+        char msg[96];
+        snprintf(msg, sizeof(msg),
+                 "%-6s identical neighbours at B = 1,2,3,4,8,16,32",
+                 sq8_kernel_name((sq8_kernel_t)kk));
+        check(same, msg);
+        free(ref);
+    }
+    sq8_force_kernel((sq8_kernel_t)-1);
+    sq8_set_query_block(0);
+    free(base); free(qry);
+}
+
 int main(void) {
     printf("==============================================================\n");
     printf("sq8 correctness\n");
@@ -247,6 +296,7 @@ int main(void) {
     test_quantization();
     test_zero_vector();
     test_kernels_same_results();
+    test_block_invariance();
     test_search();
 
     printf("\n%s (%d failure%s)\n",

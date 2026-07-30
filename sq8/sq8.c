@@ -335,63 +335,122 @@ static void emit(cand_t *h, int cnt, int k, int64_t qi,
     }
 }
 
-/* One query against the whole index. */
-static void search_one(const sq8_index_t *idx, sq8_dotfn dot,
-                       const int8_t *q, float qs, int k, int64_t qi,
-                       cand_t *heap, int64_t *out_ids, float *out_scores) {
-    const int dpad = idx->dpad;
-    int cnt = 0;
-    for (int64_t vi = 0; vi < idx->n; vi++) {
-        const int8_t *v = idx->codes + vi * dpad;
-        heap_push(heap, &cnt, k,
-                  (float)dot(q, v, dpad) * qs * idx->scales[vi], vi);
-    }
-    emit(heap, cnt, k, qi, out_ids, out_scores);
-}
+/* ------------------------------------------------------------------ *
+ * Blocked search: B queries share one pass over the database
+ * ------------------------------------------------------------------ *
+ *
+ * The loop order is the whole point. Database vectors are the outer loop and
+ * queries the inner one, so a database vector is fetched from memory once and
+ * then reused from L1 for every query in the block. Bytes read per pass stay
+ * the same; the work done per byte multiplies by B.
+ *
+ * The block itself is tiny and stays resident: at 384 dimensions, sixteen
+ * queries are 6KB and a database pair is 768 bytes, against a 64KB L1.
+ */
 
+/* B queries against two database vectors at a time, the shape SMMLA wants. */
 #if defined(__aarch64__) && defined(__ARM_FEATURE_MATMUL_INT8)
-/* Two queries against two database vectors at a time, which is the shape
- * SMMLA actually accelerates. */
-static void search_pair(const sq8_index_t *idx, sq8_dotfn dot,
-                        const int8_t *qcodes, const float *qscales,
-                        int64_t qi, int k, cand_t *heap,
-                        int64_t *out_ids, float *out_scores) {
+static void search_block_smmla(const sq8_index_t *idx, sq8_dotfn dot,
+                               const int8_t *qcodes, const float *qscales,
+                               int64_t q0, int nqb, int k,
+                               cand_t *heap, int *cnt,
+                               int64_t *out_ids, float *out_scores) {
     const int dpad = idx->dpad;
     const int64_t n = idx->n;
-    const int8_t *q0 = qcodes + qi * dpad;
-    const int8_t *q1 = qcodes + (qi + 1) * dpad;
-    const float s0 = qscales[qi], s1 = qscales[qi + 1];
-    cand_t *h0 = heap, *h1 = heap + k;
-    int c0 = 0, c1 = 0;
+    const int pairs = nqb / 2;
     int32_t out[4];
 
     int64_t vi = 0;
     for (; vi + 1 < n; vi += 2) {
         const int8_t *v0 = idx->codes + vi * dpad;
         const int8_t *v1 = idx->codes + (vi + 1) * dpad;
-        dot2x2_smmla(q0, q1, v0, v1, dpad, out);
-        heap_push(h0, &c0, k, (float)out[0] * s0 * idx->scales[vi], vi);
-        heap_push(h0, &c0, k, (float)out[1] * s0 * idx->scales[vi + 1], vi + 1);
-        heap_push(h1, &c1, k, (float)out[2] * s1 * idx->scales[vi], vi);
-        heap_push(h1, &c1, k, (float)out[3] * s1 * idx->scales[vi + 1], vi + 1);
+        const float sv0 = idx->scales[vi], sv1 = idx->scales[vi + 1];
+        for (int p = 0; p < pairs; p++) {
+            const int a = 2 * p, b = a + 1;
+            dot2x2_smmla(qcodes + (q0 + a) * dpad, qcodes + (q0 + b) * dpad,
+                         v0, v1, dpad, out);
+            const float sa = qscales[q0 + a], sb = qscales[q0 + b];
+            heap_push(heap + (size_t)a * k, cnt + a, k,
+                      (float)out[0] * sa * sv0, vi);
+            heap_push(heap + (size_t)a * k, cnt + a, k,
+                      (float)out[1] * sa * sv1, vi + 1);
+            heap_push(heap + (size_t)b * k, cnt + b, k,
+                      (float)out[2] * sb * sv0, vi);
+            heap_push(heap + (size_t)b * k, cnt + b, k,
+                      (float)out[3] * sb * sv1, vi + 1);
+        }
+        /* An odd query count leaves one without a partner for the tile. */
+        if (nqb & 1) {
+            const int a = nqb - 1;
+            const int8_t *q = qcodes + (q0 + a) * dpad;
+            const float sa = qscales[q0 + a];
+            heap_push(heap + (size_t)a * k, cnt + a, k,
+                      (float)dot(q, v0, dpad) * sa * sv0, vi);
+            heap_push(heap + (size_t)a * k, cnt + a, k,
+                      (float)dot(q, v1, dpad) * sa * sv1, vi + 1);
+        }
     }
     for (; vi < n; vi++) {
         const int8_t *v = idx->codes + vi * dpad;
-        heap_push(h0, &c0, k, (float)dot(q0, v, dpad) * s0 * idx->scales[vi], vi);
-        heap_push(h1, &c1, k, (float)dot(q1, v, dpad) * s1 * idx->scales[vi], vi);
+        const float sv = idx->scales[vi];
+        for (int j = 0; j < nqb; j++)
+            heap_push(heap + (size_t)j * k, cnt + j, k,
+                      (float)dot(qcodes + (q0 + j) * dpad, v, dpad)
+                      * qscales[q0 + j] * sv, vi);
     }
-    emit(h0, c0, k, qi, out_ids, out_scores);
-    emit(h1, c1, k, qi + 1, out_ids, out_scores);
+    for (int j = 0; j < nqb; j++)
+        emit(heap + (size_t)j * k, cnt[j], k, q0 + j, out_ids, out_scores);
 }
 #endif
 
+/* Same tiling with a one-vector-wide kernel. This is the control: holding the
+ * block factor equal and swapping only the instruction is the only way to say
+ * what i8mm is worth, as distinct from what the loop order is worth. */
+static void search_block_dot(const sq8_index_t *idx, sq8_dotfn dot,
+                             const int8_t *qcodes, const float *qscales,
+                             int64_t q0, int nqb, int k,
+                             cand_t *heap, int *cnt,
+                             int64_t *out_ids, float *out_scores) {
+    const int dpad = idx->dpad;
+    for (int64_t vi = 0; vi < idx->n; vi++) {
+        const int8_t *v = idx->codes + vi * dpad;
+        const float sv = idx->scales[vi];
+        for (int j = 0; j < nqb; j++)
+            heap_push(heap + (size_t)j * k, cnt + j, k,
+                      (float)dot(qcodes + (q0 + j) * dpad, v, dpad)
+                      * qscales[q0 + j] * sv, vi);
+    }
+    for (int j = 0; j < nqb; j++)
+        emit(heap + (size_t)j * k, cnt[j], k, q0 + j, out_ids, out_scores);
+}
+
 /* Threads are set from the environment so the benchmark can pin this to one
  * core and compare like for like against a single-threaded FAISS, then let
- * both use the whole machine. Parallelism is over queries, which is also how
- * FAISS parallelises a batched search. */
+ * both use the whole machine. Parallelism is over query blocks, which is also
+ * how FAISS parallelises a batched search. */
 static int g_threads = 0;   /* 0 means use whatever OpenMP defaults to */
 
 void sq8_set_num_threads(int t) { g_threads = t; }
+
+/* Two keeps the pre-blocking behaviour, so the sweep measures against what
+ * was already published rather than against a strawman. */
+#define SQ8_QBLOCK_DEFAULT 2
+#define SQ8_QBLOCK_MAX 64
+
+static int g_qblock = 0;
+
+void sq8_set_query_block(int qb) { g_qblock = qb; }
+
+int sq8_query_block(void) {
+    if (g_qblock > 0)
+        return g_qblock < SQ8_QBLOCK_MAX ? g_qblock : SQ8_QBLOCK_MAX;
+    const char *e = getenv("SQ8_QUERY_BLOCK");
+    if (e) {
+        int v = atoi(e);
+        if (v > 0) return v < SQ8_QBLOCK_MAX ? v : SQ8_QBLOCK_MAX;
+    }
+    return SQ8_QBLOCK_DEFAULT;
+}
 
 sq8_kernel_t sq8_search_ip(const sq8_index_t *idx,
                            const int8_t *qcodes, const float *qscales,
@@ -399,45 +458,36 @@ sq8_kernel_t sq8_search_ip(const sq8_index_t *idx,
                            int64_t *out_ids, float *out_scores) {
     const sq8_kernel_t kern = sq8_best_kernel();
     const sq8_dotfn dot = resolve_dot(kern);   /* resolved once, not per vector */
+    const int qb = sq8_query_block();
 
 #if defined(_OPENMP)
     if (g_threads > 0) omp_set_num_threads(g_threads);
 #endif
 
-#if defined(__aarch64__) && defined(__ARM_FEATURE_MATMUL_INT8)
-    if (kern == SQ8_KERNEL_SMMLA && nq >= 2) {
-        const int64_t npairs = nq / 2;
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic)
-#endif
-        for (int64_t p = 0; p < npairs; p++) {
-            cand_t *h = malloc((size_t)2 * k * sizeof(cand_t));
-            if (!h) continue;
-            search_pair(idx, dot, qcodes, qscales, p * 2, k, h,
-                        out_ids, out_scores);
-            free(h);
-        }
-        if (nq % 2) {
-            cand_t *h = malloc((size_t)k * sizeof(cand_t));
-            if (h) {
-                search_one(idx, dot, qcodes + (nq - 1) * idx->dpad,
-                           qscales[nq - 1], k, nq - 1, h, out_ids, out_scores);
-                free(h);
-            }
-        }
-        return kern;
-    }
-#endif
+    const int64_t nblocks = (nq + qb - 1) / qb;
 
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(dynamic)
 #endif
-    for (int64_t qi = 0; qi < nq; qi++) {
-        cand_t *h = malloc((size_t)k * sizeof(cand_t));
-        if (!h) continue;
-        search_one(idx, dot, qcodes + qi * idx->dpad, qscales[qi], k, qi, h,
-                   out_ids, out_scores);
+    for (int64_t b = 0; b < nblocks; b++) {
+        const int64_t q0 = b * qb;
+        const int nqb = (int)(nq - q0 < qb ? nq - q0 : qb);
+
+        cand_t *h = malloc((size_t)nqb * k * sizeof(cand_t));
+        int *cnt = calloc((size_t)nqb, sizeof(int));
+        if (!h || !cnt) { free(h); free(cnt); continue; }
+
+#if defined(__aarch64__) && defined(__ARM_FEATURE_MATMUL_INT8)
+        if (kern == SQ8_KERNEL_SMMLA && nqb >= 2)
+            search_block_smmla(idx, dot, qcodes, qscales, q0, nqb, k, h, cnt,
+                               out_ids, out_scores);
+        else
+#endif
+            search_block_dot(idx, dot, qcodes, qscales, q0, nqb, k, h, cnt,
+                             out_ids, out_scores);
+
         free(h);
+        free(cnt);
     }
     return kern;
 }

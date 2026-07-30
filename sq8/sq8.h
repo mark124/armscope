@@ -103,6 +103,24 @@ sq8_kernel_t sq8_search_ip(const sq8_index_t *idx,
  * compare like for like against a single-threaded baseline. */
 void sq8_set_num_threads(int t);
 
+/* How many queries share one pass over the database.
+ *
+ * A flat int8 scan reads the entire index per query and does one multiply-
+ * accumulate per byte read, so it is bandwidth-bound long before it is
+ * compute-bound: measured on Neoverse N2 at 22.9 GB/s per core, about 95% of
+ * what the memory system can stream, against roughly half the core's int8
+ * throughput. That is the reason i8mm was only worth 1.31x. SMMLA was idling
+ * on memory, not falling short as an instruction.
+ *
+ * Blocking B queries together makes each database vector, once loaded, serve
+ * B dot products instead of one, so arithmetic intensity scales with B while
+ * bytes read stay fixed. 0 selects the default. Set explicitly to sweep it,
+ * or to hold it constant while comparing SDOT against SMMLA, which is the
+ * only way to attribute a speedup to the instruction rather than the tiling.
+ */
+void sq8_set_query_block(int qb);
+int sq8_query_block(void);
+
 /* Raw int32 dot product of two padded int8 vectors. Exposed for tests and
  * for the kernel microbenchmark. */
 int32_t sq8_dot(const int8_t *a, const int8_t *b, int dpad);
