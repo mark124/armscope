@@ -30,9 +30,44 @@ jobs:
         working-directory: app
         run: python test_corpora.py
 
+  # One corpus per job. The combined build died three times with no traceback,
+  # which is what an OOM kill looks like from outside, and four streaming
+  # readers running at once makes it impossible to say which one is expensive.
+  # Splitting them answers that, and is worth keeping: a corpus that grows a
+  # row group upstream will fail here on its own name instead of taking the
+  # whole build down anonymously.
+  corpus:
+    name: ingest ${{ matrix.corpus }}
+    needs: filters
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        corpus: [wikipedia, stackexchange, arxiv, gutenberg]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install --quiet numpy datasets sentence-transformers
+      - name: Headroom
+        run: free -h
+      - name: Ingest 1000 passages
+        working-directory: app
+        env:
+          ARMSCOPE_NO_ONNX: "1"
+        run: |
+          python build_index.py --out ../idx-${{ matrix.corpus }} \
+            --corpora ${{ matrix.corpus }} --per-corpus 1000 --batch 64
+      - name: Headroom after
+        if: always()
+        run: free -h
+
   end_to_end:
     name: build and serve
-    needs: filters
+    needs: [filters, corpus]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     steps:

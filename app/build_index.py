@@ -102,7 +102,7 @@ def main() -> None:
                                     ensure_ascii=False) + "\n")
             per_source[p.source] = per_source.get(p.source, 0) + 1
         n += len(items)
-        if n % (args.batch * 10) == 0:
+        if n % (args.batch * 10) == 0 or n <= args.batch * 4:
             rate = n / (time.perf_counter() - t0)
             print(f"  {n:,} passages  {rate:,.0f}/s  rss {rss_gb():.1f}GB  "
                   f"{per_source}", flush=True)

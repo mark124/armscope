@@ -21,6 +21,7 @@ retrieval damage, and almost nobody changes the flag.
 
 from __future__ import annotations
 
+import os
 import pathlib
 
 import numpy as np
@@ -62,6 +63,8 @@ class Embedder:
         self.model_name = model
         cache = pathlib.Path(cache or ".")
         try:
+            if os.environ.get("ARMSCOPE_NO_ONNX"):
+                raise ImportError("ONNX path disabled by ARMSCOPE_NO_ONNX")
             from optimum.onnxruntime import (ORTModelForFeatureExtraction,
                                              ORTQuantizer)
             from optimum.onnxruntime.configuration import AutoQuantizationConfig
