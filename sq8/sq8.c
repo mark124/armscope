@@ -432,9 +432,16 @@ static int g_threads = 0;   /* 0 means use whatever OpenMP defaults to */
 
 void sq8_set_num_threads(int t) { g_threads = t; }
 
-/* Two keeps the pre-blocking behaviour, so the sweep measures against what
- * was already published rather than against a strawman. */
-#define SQ8_QBLOCK_DEFAULT 2
+/* Measured on Neoverse N2 at 400k x 384, one core, bench/blocked.py:
+ *
+ *   B      1      2      4      8     16     32
+ *   sdot  160.1  202.8  227.7  247.4  241.7  247.8
+ *   smmla 156.7  236.2  262.4  294.4  315.9  316.7
+ *
+ * 16 and 32 tie and both sit at the kernel's cache-resident ceiling, so take
+ * the smaller: the block is live in L1 alongside the database vectors, and
+ * there is nothing to buy above the point where the curve flattens. */
+#define SQ8_QBLOCK_DEFAULT 16
 #define SQ8_QBLOCK_MAX 64
 
 static int g_qblock = 0;
