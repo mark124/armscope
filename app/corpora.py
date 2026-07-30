@@ -16,6 +16,7 @@ says so and links every result back to its source.
 from __future__ import annotations
 
 import dataclasses
+import random
 import re
 from collections.abc import Iterator
 from html import unescape
@@ -312,15 +313,35 @@ def spread(ds, buffer: int):
     visible in the passage text, which is what makes it worth guarding against:
     the corpus would look fine and answer only a narrow band of questions.
 
-    Shard order is the part that carries the spread: a shard is already a
-    random slice of the corpus, so sampling within it is representative. The
-    row buffer only decorrelates neighbours, and it is kept small on purpose.
-    A row here is a whole Wikipedia article or an entire Gutenberg book, and
-    all four readers are alive at once because the corpora are interleaved, so
-    a generous buffer is four large Arrow row groups plus four buffers of
-    documents. That combination killed the CI runner twice with 14GB free.
+    The obvious tool is `IterableDataset.shuffle`, and it does not do what the
+    name suggests here. It does not read the shards in a shuffled order, it
+    cycles across all of them at once, so every shard holds an open reader and
+    a parquet row group. Measured on the CI runner at 1000 passages: Gutenberg
+    12.1GB, Wikipedia 9.9GB and still climbing, against 1.2GB for arXiv. Each
+    survives alone on a 15GB box and the four together cannot, which is what
+    was killing the build with no traceback.
+
+    A row group is only that large because the rows are: a whole article, an
+    entire book. So take the shards one at a time and shuffle only their
+    order, which is where the spread comes from anyway. Within a shard the
+    rows stay in natural order, and that is fine, because a shard is an
+    arbitrary slice of the whole corpus rather than the front of it.
+
+    `buffer` is accepted and ignored, kept so the call sites still record what
+    each corpus was once thought to need.
     """
-    return ds.shuffle(seed=SEED, buffer_size=buffer)
+    n = getattr(ds, "n_shards", 1) or 1
+    if n < 2:
+        return ds
+
+    order = list(range(n))
+    random.Random(SEED).shuffle(order)
+
+    def one_at_a_time():
+        for i in order:
+            yield from ds.shard(num_shards=n, index=i)
+
+    return one_at_a_time()
 
 
 def wikipedia(limit: int | None = None, lang: str = "en") -> Iterator[Passage]:
