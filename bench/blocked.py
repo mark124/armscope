@@ -92,23 +92,30 @@ def peak_bandwidth(nbytes: int) -> float:
 
 
 def peak_macs(rng, d: int, dpad: int) -> float:
-    """The same search kernel with the database resident in L1.
+    """The same search kernel with the database resident in cache.
 
-    64 vectors at 384 dimensions is 24KB, comfortably inside a 64KB L1, so
-    nothing is waiting on memory and what is left is the instruction stream.
-    Swept over block factors and the best taken, since the ceiling is the best
-    this kernel can do rather than the best at any particular tiling.
+    Measured with the real search rather than a synthetic loop, so the heap
+    and the score scaling are priced in and the ratio against it means
+    something.
+
+    Several sizes, largest rate wins. A very small index exaggerates the fixed
+    per-query cost, the malloc and the final sort, and reports a ceiling below
+    what the kernel actually sustains; a large one starts missing cache and
+    measures memory again. 64 vectors is 24KB against a 64KB L1 and 4096 is
+    1.5MB against a 1MB L2, so the true ceiling is somewhere in the range and
+    taking the maximum finds it without having to know the cache geometry.
     """
-    small = 64
-    idx = Sq8Index(rng.standard_normal((small, d), dtype=np.float32))
-    nq = 8192
-    codes, scales = idx.quantize_queries(
-        rng.standard_normal((nq, d), dtype=np.float32))
     best = 0.0
-    for b in BLOCKS:
-        lib.sq8_set_query_block(b)
-        el = timed(lambda: idx.search(codes, scales, nq, K))
-        best = max(best, small * dpad * nq / el)
+    for n in (64, 256, 1024, 4096):
+        idx = Sq8Index(rng.standard_normal((n, d), dtype=np.float32))
+        nq = 8192
+        codes, scales = idx.quantize_queries(
+            rng.standard_normal((nq, d), dtype=np.float32))
+        for b in BLOCKS:
+            lib.sq8_set_query_block(b)
+            el = timed(lambda: idx.search(codes, scales, nq, K), repeats=2)
+            best = max(best, n * dpad * nq / el)
+        del idx
     return best / 1e9
 
 
@@ -126,14 +133,26 @@ def main() -> None:
     print(f"index {per_pass / 1e6:.1f} MB, "
           f"{per_pass * NQ / 1e9:.1f} GB read per batch at B=1")
 
+    # Ask before forcing anything: sq8_best_kernel reports the forced kernel
+    # once one is set, so checking inside the loop would say i8mm is absent
+    # the moment SDOT is pinned. That is exactly what it did on the first run.
+    lib.sq8_force_kernel(-1)
+    have = {"sdot": True, "smmla": lib.sq8_best_kernel() == KERNELS["smmla"]}
+
     bw = peak_bandwidth(max(per_pass, 256 << 20))
-    ops = peak_macs(rng, D, idx.dpad)
     print("\nmeasured ceilings, one core:")
     print(f"  streaming bandwidth  {bw:7.1f} GB/s")
-    print(f"  int8 MACs from L1    {ops:7.1f} G/s")
-    print(f"  ridge point          {ops / bw:7.2f} MACs per byte")
-    print(f"  flat scan intensity     1.00 MACs per byte at B=1, "
-          f"so it should be bandwidth-bound\n")
+
+    ceiling = {}
+    for name in ("sdot", "smmla"):
+        if not have[name]:
+            continue
+        lib.sq8_force_kernel(KERNELS[name])
+        ceiling[name] = peak_macs(rng, D, idx.dpad)
+        print(f"  {name} MACs from cache {ceiling[name]:6.1f} G/s   "
+              f"ridge point {ceiling[name] / bw:.2f} MACs per byte")
+    lib.sq8_force_kernel(-1)
+    print("  a flat scan sits at 1.00 MACs per byte at B=1\n")
 
     rows: list[dict] = []
     base: dict[str, float] = {}
@@ -141,9 +160,10 @@ def main() -> None:
           f"{'%bw':>5s} {'%cpu':>5s} {'vs B=1':>7s}")
 
     for name in ("sdot", "smmla"):
-        if name == "smmla" and lib.sq8_best_kernel() != KERNELS["smmla"]:
+        if not have[name]:
             print(f"{name:8s} not available on this CPU, skipped")
             continue
+        ops = ceiling[name]
         lib.sq8_force_kernel(KERNELS[name])
         for b in BLOCKS:
             lib.sq8_set_query_block(b)
@@ -178,7 +198,7 @@ def main() -> None:
                 print(f"  B={b:2d}   smmla / sdot = {smmla[b] / sdot[b]:.2f}x")
 
     pathlib.Path("blocked.json").write_text(json.dumps(
-        {"n": N, "d": D, "nq": NQ, "bandwidth_gbs": bw, "peak_macs": ops,
+        {"n": N, "d": D, "nq": NQ, "bandwidth_gbs": bw, "peak_macs": ceiling,
          "rows": rows}, indent=2))
     print("\nwrote blocked.json")
 
