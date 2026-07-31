@@ -60,7 +60,9 @@ jobs:
       # 400k is 153MB, past this core's cache, which is where blocking has
       # something to fix. 4M is the size the live demo runs at.
       - name: Sweep at 400k
-        run: python bench/blocked.py 400000 | tee roofline.txt
+        run: |
+          python bench/blocked.py 400000 | tee roofline.txt
+          mv blocked.json blocked-400k.json
       - name: Sweep at demo scale
         run: |
           python bench/blocked.py 4000000 | tee roofline-4m.txt
@@ -72,5 +74,5 @@ jobs:
           path: |
             roofline.txt
             roofline-4m.txt
-            blocked.json
+            blocked-400k.json
             blocked-4m.json

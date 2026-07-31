@@ -26,17 +26,19 @@ were added to accelerate.
 384-dim, k=10, single thread, Neoverse N2:
 
 ```
-  FAISS IndexFlatIP (float32)      278.6 QPS   recall 1.000
-  FAISS QT_8bit_direct_signed      228.3 QPS   recall 0.978   <- fastest FAISS int8
+  FAISS IndexFlatIP (float32)      263.3 QPS   recall 1.000
+  FAISS QT_8bit_direct_signed      231.2 QPS   recall 0.978   <- fastest FAISS int8
   FAISS QT_8bit_uniform             90.4 QPS   recall 0.980
   FAISS QT_8bit                     87.1 QPS   recall 0.987
+  sq8 [scalar]                     143.8 QPS   recall 0.981   <- no SIMD at all
+  sq8 [neon]                       750.6 QPS   recall 0.981
   sq8 [sdot]                     1,627.6 QPS   recall 0.981
-  sq8 [smmla]                    2,092.9 QPS   recall 0.981
+  sq8 [smmla]                    2,106.2 QPS   recall 0.981
 ```
 
-- **9.2x faster than the fastest working FAISS int8 mode, at better recall**
+- **9.1x faster than the fastest working FAISS int8 mode, at better recall**
   (0.981 vs 0.978). Approximate int8 against approximate int8, the fair fight.
-- **7.5x faster than FAISS's exact float32 search**, giving up 1.9 points of
+- **8.0x faster than FAISS's exact float32 search**, giving up 1.9 points of
   recall. Different claim, stated separately rather than blended in.
 
 ### Against PQ fast-scan, which is the real competition
@@ -134,30 +136,50 @@ tool and this is not it. (Recall figures above are on synthetic Gaussian data,
 which is PQ's worst case; the real-embedding comparison is in
 `bench/bench_real_embeddings.py`.)
 
-## Where the speedup actually comes from, and what i8mm is really worth
+## Where the speedup actually comes from
 
-Two separate things, and it matters which is which:
+Symmetric quantization is not what makes this fast. **With a genuinely scalar
+kernel, sq8 is 143.8 QPS, which is slower than the FAISS index it replaces.**
+What the design change buys is not speed, it is *eligibility*: it turns the
+inner loop into something Arm's integer SIMD can run at all.
 
-| source | gain |
-| --- | --- |
-| symmetric quantization (both sides int8) | **~7.1x** (FAISS 228.3 to sq8 sdot 1,627.6) |
-| Arm i8mm on top of that | **1.29x** (smmla 2,092.9 vs sdot 1,627.6) |
+The speed is then entirely the instruction stack:
 
-Most of the win is the design change. Reporting the headline as "9x from i8mm"
-would be false.
+| step | QPS | gain over the step below |
+| --- | --- | --- |
+| scalar, no SIMD | 143.8 | baseline |
+| NEON `SMULL`/`SADALP` | 750.6 | **5.22x** |
+| dotprod `SDOT` | 1,627.6 | **2.17x** |
+| i8mm `SMMLA` | 2,106.2 | **1.29x** |
 
-But that second row hides something, and finding it changed the kernel.
+**14.6x from the Arm instructions**, against a design change that on its own
+runs slower than FAISS.
 
-An earlier version of this table put i8mm at 1.31x by comparing SMMLA against
+> That table was wrong until recently, in the flattering direction. The scalar
+> row used to read 1,603.5 QPS, within 2% of the hand-written SDOT kernel,
+> because it was compiled alongside the tuned kernels at `-O3
+> -march=armv8.2-a+dotprod+i8mm` and GCC autovectorised it into the very
+> instructions the benchmark existed to isolate. On aarch64 you cannot switch
+> NEON off with `-march`, since Advanced SIMD is part of the base architecture.
+> The reference kernel now lives in [`sq8/sq8_ref.c`](sq8/sq8_ref.c), built
+> separately with vectorisation disabled by name, and CI disassembles that
+> object and fails if it contains a single SIMD instruction.
+
+### What i8mm is really worth
+
+That last row, 1.29x, is a poor return on a dedicated matrix instruction. It is
+also not a property of the instruction.
+
+An earlier version of this README put i8mm at 1.31x by comparing SMMLA against
 SDOT. SMMLA consumes a 2x8 by 8x2 tile, so using it at all means processing two
 queries at once, while the SDOT path did one. The comparison priced the
 instruction and the loop order together and called the total "i8mm".
 
-Held at a **matched** block factor, the instruction alone measures:
+Held at a **matched** block factor, on four million vectors:
 
 | queries per pass | 1 | 2 | 4 | 8 | 16 | 32 |
 | --- | --- | --- | --- | --- | --- | --- |
-| smmla / sdot | **0.98x** | 1.16x | 1.15x | 1.19x | **1.31x** | 1.28x |
+| smmla / sdot | **1.00x** | 1.14x | 1.21x | 1.19x | **1.29x** | 1.26x |
 
 **On a flat scan, i8mm is worth nothing at all.** It only pays once the loop
 gives it enough work per byte to stay fed.
@@ -173,30 +195,33 @@ measured on the same core in the same run rather than quoted from a datasheet
 
 | measured on one Neoverse N2 core | |
 | --- | --- |
-| streaming bandwidth | 37.0 GB/s |
-| sdot MACs, cache-resident | 37.2 G/s, ridge at 1.01 MACs/byte |
-| smmla MACs, cache-resident | 46.6 G/s, ridge at 1.26 MACs/byte |
+| streaming bandwidth | 35.5 GB/s |
+| sdot MACs, cache-resident | 37.2 G/s, ridge at 1.05 MACs/byte |
+| smmla MACs, cache-resident | 46.6 G/s, ridge at 1.31 MACs/byte |
 
 ![roofline](docs/roofline.svg)
 
 **We got the diagnosis wrong before measuring it, and the measurement says so.**
 The prediction was that the scan sat at about 95% of the bandwidth roof. It sits
-at 65%, right at the knee rather than against the wall. The fix worked anyway:
+at 54%, right at the knee rather than against the wall. The fix worked anyway:
 blocking B queries into one pass leaves bytes read unchanged and multiplies work
 per byte by B.
 
+Four million vectors, one core:
+
 | queries per pass | 1 | 2 | 4 | 8 | 16 | 32 |
 | --- | --- | --- | --- | --- | --- | --- |
-| sdot QPS | 160.1 | 202.8 | 227.7 | 247.4 | 241.7 | 247.8 |
-| smmla QPS | 156.7 | 236.2 | 262.4 | 294.4 | 315.9 | 316.7 |
+| sdot QPS | 12.5 | 17.8 | 21.1 | 24.4 | 24.6 | 25.3 |
+| smmla QPS | 12.5 | 20.4 | 25.5 | 29.1 | 31.7 | 31.9 |
 
-**1.55x for SDOT, 2.02x for SMMLA**, one core, 400k vectors. The default block
-factor is 16, where the curve flattens.
+**2.02x for SDOT, 2.54x for SMMLA.** The default block factor is 16, where the
+curve flattens.
 
-Two honest limits on that number. The win is size-dependent: at 60k vectors the
-index is 23MB and largely cache-resident, so blocking is worth only 1.05x, while
-at 400k it is 153MB and worth 2.02x. And it is a batch result: a server
-answering one query at a time runs at B=1 and gets none of it.
+Two honest limits. The win is **size-dependent**, because it is a cache effect:
+at 60k vectors the index is 23MB and largely cache-resident, so blocking is
+worth 1.05x; at 400k (153MB) it is 2.25x; at 4M (1.5GB) it is 2.54x. And it is
+a **batch** result: a server answering one query at a time runs at B=1 and gets
+none of it.
 
 ## What this was red-teamed against
 

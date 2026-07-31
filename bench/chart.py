@@ -15,8 +15,13 @@ import json
 import math
 import pathlib
 
+import sys
+
 HERE = pathlib.Path(__file__).resolve().parent.parent
-DATA = HERE / "results" / "blocked.json"
+# Defaults to the four-million-vector sweep, which is the size the live demo
+# runs at and the size where blocking has something to fix.
+DATA = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 \
+    else HERE / "results" / "blocked-4m.json"
 OUT = HERE / "docs"
 
 W, H = 760, 448
@@ -197,10 +202,16 @@ def sweep(d) -> str:
     top = max(list(sdot.values()) + list(smmla.values())) * 1.18
 
     ax = Axes(0.85, 38, 0, top, xlog=True)
+    # Derived from the data, not hardcoded: the same sweep runs at 160-320 QPS
+    # on 400k vectors and 12-32 on four million, and a fixed tick list silently
+    # squashed the second one onto the axis.
+    step = next(s for s in (1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500)
+                if top / s <= 6)
+    yticks = [i * step for i in range(int(top // step) + 1)]
     p = head("i8mm is worth nothing until the loop gives it enough to do",
              "queries sharing one pass over the database. Same instruction, "
              "same data, only the loop order changes.")
-    p += frame(ax, blocks, [0, 100, 200, 300],
+    p += frame(ax, blocks, yticks,
                lambda v: f"{v:g}", lambda v: f"{v:g}",
                "queries blocked into one pass over the database",
                "queries per second, one core")
