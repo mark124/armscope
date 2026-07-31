@@ -26,8 +26,7 @@ jobs:
       - name: Build
         working-directory: sq8
         run: |
-          gcc -O2 -Wall -Wextra -fopenmp -march=armv8.2-a+dotprod+i8mm \
-            -o test_sq8 test_sq8.c sq8.c -lm
+          bash build.sh test
           echo built
 
       - name: Confirm the binary contains the instructions under test
@@ -64,8 +63,7 @@ jobs:
       - name: Build shared library
         working-directory: sq8
         run: |
-          gcc -O3 -fPIC -shared -fopenmp -march=armv8.2-a+dotprod+i8mm \
-            -o libsq8.so sq8.c -lm
+          bash build.sh lib
           ls -l libsq8.so
 
       - name: Install FAISS

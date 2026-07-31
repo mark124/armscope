@@ -24,11 +24,17 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      # Assert the scalar baseline really is scalar before anything is
+      # measured against it. It was not, for weeks: compiled in with the tuned
+      # kernels at -O3 +dotprod, GCC autovectorised the obvious loop into SDOT
+      # and the "scalar" row landed within 2% of the hand-written SDOT one.
+      - name: The scalar baseline contains no SIMD
+        working-directory: sq8
+        run: bash build.sh verify
       - name: Build
         working-directory: sq8
         run: |
-          gcc -O2 -Wall -Wextra -fopenmp -march=armv8.2-a+dotprod+i8mm \
-            -o test_sq8 test_sq8.c sq8.c -lm
+          bash build.sh test
       - name: Run
         working-directory: sq8
         run: ./test_sq8
@@ -48,16 +54,23 @@ jobs:
       - name: Build shared library
         working-directory: sq8
         run: |
-          gcc -O3 -fPIC -shared -fopenmp -march=armv8.2-a+dotprod+i8mm \
-            -o libsq8.so sq8.c -lm
+          bash build.sh lib
       - name: Install
         run: pip install --quiet numpy
-      - name: Sweep
+      # 400k is 153MB, past this core's cache, which is where blocking has
+      # something to fix. 4M is the size the live demo runs at.
+      - name: Sweep at 400k
         run: python bench/blocked.py 400000 | tee roofline.txt
+      - name: Sweep at demo scale
+        run: |
+          python bench/blocked.py 4000000 | tee roofline-4m.txt
+          mv blocked.json blocked-4m.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: roofline
           path: |
             roofline.txt
+            roofline-4m.txt
             blocked.json
+            blocked-4m.json

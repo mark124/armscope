@@ -95,10 +95,14 @@ void sq8_force_kernel(sq8_kernel_t k) { g_forced = (int)k; }
  * Dot product kernels. Every one must agree exactly with sq8_dot_scalar.
  * ------------------------------------------------------------------ */
 
+/* Defined in sq8_ref.c, which is compiled separately with vectorisation off.
+ * It cannot live in this file: at -O3 with +dotprod the compiler turns the
+ * obvious loop into SDOT, and the scalar baseline stops being one. See the
+ * comment at the top of that file, and the build's zero-SIMD assertion. */
+extern int32_t sq8_dot_ref(const int8_t *a, const int8_t *b, int dpad);
+
 static int32_t dot_scalar(const int8_t *a, const int8_t *b, int dpad) {
-    int32_t s = 0;
-    for (int i = 0; i < dpad; i++) s += (int32_t)a[i] * (int32_t)b[i];
-    return s;
+    return sq8_dot_ref(a, b, dpad);
 }
 
 #if defined(__aarch64__)

@@ -47,9 +47,54 @@ lib.sq8_query_block.restype = ctypes.c_int
 
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 400_000
 D = 384
-NQ = 512
+# Fewer queries at large n so the sweep stays inside a CI job: every extra
+# query at B=1 is another full pass over the index.
+NQ = 512 if N <= 1_000_000 else 128
 K = 10
 BLOCKS = [1, 2, 4, 8, 16, 32]
+
+lib.sq8_from_codes.restype = ctypes.c_void_p
+lib.sq8_from_codes.argtypes = [ctypes.POINTER(ctypes.c_int8),
+                               ctypes.POINTER(ctypes.c_float),
+                               ctypes.c_int64, ctypes.c_int]
+
+
+class CodesIndex:
+    """An index built straight from int8 codes, skipping float32 entirely.
+
+    Sq8Index quantizes from float32, which needs four bytes per dimension of
+    source data: at four million vectors that is 6.1GB before the index
+    exists, on top of the index. This benchmark measures throughput, and
+    throughput does not depend on what the codes mean, so it synthesizes
+    them and keeps the footprint to the 1.5GB the index actually occupies.
+    """
+
+    def __init__(self, n: int, d: int, seed: int = 1):
+        rng = np.random.default_rng(seed)
+        self.n, self.d = n, d
+        self.dpad = (d + 15) // 16 * 16
+        codes = rng.integers(-127, 128, size=n * self.dpad,
+                             dtype=np.int8)
+        scales = np.full(n, 1.0 / 127.0, dtype=np.float32)
+        self.ptr = lib.sq8_from_codes(
+            codes.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)),
+            scales.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), n, d)
+        if not self.ptr:
+            raise RuntimeError("sq8_from_codes failed")
+        del codes
+
+    def quantize_queries(self, xq):
+        nq = len(xq)
+        xq = np.ascontiguousarray(xq, dtype=np.float32)
+        c = np.zeros(nq * self.dpad, dtype=np.int8)
+        s = np.zeros(nq, dtype=np.float32)
+        lib.sq8_quantize_queries(
+            xq.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), nq, self.d,
+            c.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)),
+            s.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
+        return c, s
+
+    search = Sq8Index.search
 
 
 def timed(fn, repeats: int = 3) -> float:
@@ -123,7 +168,7 @@ def main() -> None:
     rng = np.random.default_rng(0)
     print(f"n={N:,}  d={D}  nq={NQ}  k={K}\n")
 
-    idx = Sq8Index(rng.standard_normal((N, D), dtype=np.float32))
+    idx = CodesIndex(N, D)
     codes, scales = idx.quantize_queries(
         rng.standard_normal((NQ, D), dtype=np.float32))
 

@@ -30,8 +30,7 @@ jobs:
       - name: Build sq8
         working-directory: sq8
         run: |
-          gcc -O3 -fPIC -shared -fopenmp -march=armv8.2-a+dotprod+i8mm \
-            -o libsq8.so sq8.c -lm
+          bash build.sh lib
 
       - name: Install
         run: pip install --quiet faiss-cpu numpy
