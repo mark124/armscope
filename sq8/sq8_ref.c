@@ -12,7 +12,7 @@
  * is to compile this file separately with vectorisation disabled, which is
  * what sq8/build.sh does:
  *
- *   -O2 -march=armv8-a -fno-tree-vectorize -fno-slp-vectorize
+ *   -O2 -march=armv8-a -fno-tree-vectorize -fno-tree-slp-vectorize
  *
  * The build then disassembles this object and asserts it contains zero SIMD
  * instructions, so the claim is checked rather than trusted. A baseline that

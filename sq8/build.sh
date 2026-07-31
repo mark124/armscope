@@ -13,7 +13,7 @@ FAST="-O3 -fopenmp -march=armv8.2-a+dotprod+i8mm"
 # The reference kernel must not be vectorised. -march cannot express that on
 # aarch64, since Advanced SIMD is part of the base architecture, so the
 # vectorisers are switched off by name instead.
-REF="-O2 -march=armv8-a -fno-tree-vectorize -fno-slp-vectorize"
+REF="-O2 -march=armv8-a -fno-tree-vectorize -fno-tree-slp-vectorize"
 
 case "${1:-lib}" in
   lib)
