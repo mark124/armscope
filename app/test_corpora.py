@@ -170,6 +170,43 @@ check("chunk drops nothing", "".join(pieces).count("Alpha"), 40)
 check("chunk skips short paragraphs", list(chunk("Too short.")), [])
 
 
+# --- resilience: upstream data is not ours to fix ---------------------------
+
+def _boom(n):
+    """Yields n items then raises, like a parquet shard that fails to decode."""
+    for i in range(n):
+        yield i
+    raise ValueError("Index not in dictionary bounds")
+
+
+from corpora import survive  # noqa: E402
+
+check("survive keeps what a corpus produced before it broke",
+      list(survive("test", _boom(3))), [0, 1, 2])
+check("survive does not re-raise",
+      list(survive("test", _boom(0))), [])
+
+
+class _FakeShardedDataset:
+    """Two shards, the first of which cannot be read."""
+
+    n_shards = 2
+
+    def shard(self, num_shards, index):
+        if index == 0:
+            def bad():
+                raise ValueError("Index not in dictionary bounds")
+                yield
+            return bad()
+        return iter([{"row": 1}, {"row": 2}])
+
+
+from corpora import spread  # noqa: E402
+
+check("spread skips an unreadable shard and keeps going",
+      [r["row"] for r in spread(_FakeShardedDataset(), 10)], [1, 2])
+
+
 if FAILURES:
     print(f"{len(FAILURES)} failed\n")
     for f in FAILURES:

@@ -338,8 +338,23 @@ def spread(ds, buffer: int):
     random.Random(SEED).shuffle(order)
 
     def one_at_a_time():
+        # A shard that will not decode must not end the build. Wikipedia shard
+        # 11 of 41 raises ArrowInvalid("Index not in dictionary bounds") part
+        # way through, and because the corpora are interleaved that one shard
+        # took all four down after an hour of work. We are sampling anyway:
+        # losing one shard of forty costs nothing, and losing the run costs
+        # the night. What is skipped is printed rather than swallowed.
+        skipped = []
         for i in order:
-            yield from ds.shard(num_shards=n, index=i)
+            try:
+                yield from ds.shard(num_shards=n, index=i)
+            except Exception as exc:  # noqa: BLE001
+                skipped.append(i)
+                print(f"  shard {i}/{n} unreadable, skipping "
+                      f"({type(exc).__name__}: {str(exc)[:70]})", flush=True)
+        if skipped:
+            print(f"  {len(skipped)} of {n} shards skipped: {skipped}",
+                  flush=True)
 
     return one_at_a_time()
 
@@ -502,11 +517,29 @@ ADAPTERS = {
 }
 
 
+def survive(name: str, gen: Iterator[Passage]) -> Iterator[Passage]:
+    """Let one corpus fail without taking the other three with it.
+
+    The corpora are interleaved, so an exception anywhere propagates out of
+    zip_longest and ends everything. Upstream data is not ours to fix and a
+    multi-hour build should degrade rather than die: whatever the corpus
+    produced before it broke is kept, the failure is printed, and the rest of
+    the build carries on. The manifest records the per-source counts, so a
+    corpus that stopped early is visible in the output rather than implied.
+    """
+    try:
+        yield from gen
+    except Exception as exc:  # noqa: BLE001
+        print(f"  corpus {name} stopped early "
+              f"({type(exc).__name__}: {str(exc)[:90]})", flush=True)
+
+
 def stream(names: list[str], per_corpus: int | None) -> Iterator[Passage]:
     """Interleave corpora so a truncated build still spans all of them."""
     import itertools
 
-    gens = [ADAPTERS[n](limit=per_corpus) for n in names if n in ADAPTERS]
+    gens = [survive(n, ADAPTERS[n](limit=per_corpus))
+            for n in names if n in ADAPTERS]
     for group in itertools.zip_longest(*gens):
         for p in group:
             if p is not None:
