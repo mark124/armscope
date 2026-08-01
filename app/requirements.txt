@@ -1,0 +1,16 @@
+# Pinned because two of these are not interchangeable.
+#
+# pyarrow 25.0.0 cannot read the wikimedia/wikipedia parquet files at all:
+# every one of the 41 shards raises ArrowInvalid("Index not in dictionary
+# bounds"). 23.0.1 reads them. This was found on the demo box after the
+# library floated up a major version, having worked in CI the day before, so
+# the versions are nailed down rather than left to resolve.
+pyarrow==23.0.1
+datasets==4.8.4
+
+numpy
+sentence-transformers
+optimum[onnxruntime]
+faiss-cpu
+fastapi
+uvicorn

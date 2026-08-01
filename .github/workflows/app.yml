@@ -85,10 +85,10 @@ jobs:
           bash build.sh lib
           ls -l libsq8.so
 
+      # Pinned: pyarrow floated to 25.0.0 and could no longer read a single
+      # one of the 41 wikimedia/wikipedia shards. CI was green the day before.
       - name: Install
-        run: |
-          pip install --quiet faiss-cpu numpy datasets fastapi uvicorn \
-            sentence-transformers "optimum[onnxruntime]"
+        run: pip install --quiet -r app/requirements.txt
 
       # The runner died twice inside the ONNX export with only "received a
       # shutdown signal", which is what both an OOM kill and a full disk look

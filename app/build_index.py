@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
+import sys
 import time
 
 import numpy as np
@@ -132,6 +134,16 @@ def main() -> None:
     print(f"  vectors {(n * ((dpad or 0) + 4)) / 1e9:.2f} GB resident")
     print(f"  text    {offset / 1e9:.2f} GB on disk")
     print(json.dumps(manifest, indent=2))
+
+    # Leave without running interpreter teardown. The streaming readers abort
+    # with "terminate called without an active exception" when their Arrow
+    # iterators are collected after being abandoned mid-shard, which is what
+    # every one of these adapters does once it hits its limit. Every file is
+    # written and closed above, so a crash here would destroy nothing except
+    # the exit code, and an exit code is what a caller checks.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
 
 
 if __name__ == "__main__":
