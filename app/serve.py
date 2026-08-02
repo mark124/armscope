@@ -99,23 +99,43 @@ def load():
     if WITH_FAISS:
         import faiss
         faiss.omp_set_num_threads(os.cpu_count() or 4)
-        # Reconstruct float32 from the SAME codes so both indexes hold
-        # identical data. FAISS's direct_signed mode reads int8 stored as
-        # float, and it was the fastest working FAISS int8 mode we measured.
+        # Both indexes must hold the same passages, each in the best form its
+        # own design allows. That is not the same as handing FAISS our codes.
         #
-        # In chunks, because the float32 view is four times the size of the
-        # codes: at 8M passages converting in one shot is 12.3GB of transient
-        # allocation on a box with 16GB, on top of both finished indexes.
+        # sq8 keeps a scale per vector. QT_8bit_direct_signed cannot express
+        # one: it reads int8 stored as float and multiplies, full stop. Giving
+        # it our codes without the scales therefore had it ranking by an
+        # unscaled dot product, which is a different quantity from the one it
+        # would compute for itself, and the two backends disagreed on half the
+        # results because one of them was answering a slightly wrong question.
+        # It did not touch the timings, since either way FAISS scans the same
+        # 384 bytes per vector, but it made the agreement figure meaningless.
+        #
+        # So dequantize back to float and requantize against a single global
+        # scale, which is the representation FAISS's fastest int8 mode is
+        # built for. Per-vector versus per-tensor is then a real difference
+        # between the two systems rather than a handicap we imposed.
+        #
+        # In chunks: float32 is four times the size of the codes, so at three
+        # million passages converting in one shot is 4.6GB of transient
+        # allocation on a box with eight.
         f = faiss.IndexScalarQuantizer(
             dim, faiss.ScalarQuantizer.QT_8bit_direct_signed,
             faiss.METRIC_INNER_PRODUCT)
         grid = codes.reshape(n, dpad)
+        gscale = float(np.abs(scales).max()) * 127.0 or 1.0
         step = 100_000
-        f.train(np.ascontiguousarray(grid[:min(n, step), :dim],
-                                     dtype=np.float32))
+
+        def block(i: int) -> np.ndarray:
+            raw = grid[i:i + step, :dim].astype(np.float32)
+            raw *= scales[i:i + step, None]          # back to embedding space
+            np.multiply(raw, 127.0 / gscale, out=raw)  # one scale for all
+            np.rint(raw, out=raw)
+            return np.ascontiguousarray(np.clip(raw, -127, 127))
+
+        f.train(block(0))
         for i in range(0, n, step):
-            f.add(np.ascontiguousarray(grid[i:i + step, :dim],
-                                       dtype=np.float32))
+            f.add(block(i))
         del grid
         faiss_idx = f
 
@@ -162,10 +182,12 @@ def search_sq8(vec: np.ndarray, k: int):
 
 
 def search_faiss(vec: np.ndarray, k: int):
+    """The query is quantized the same way the database was: one global scale,
+    matching what direct_signed expects on both sides."""
     if FAISS_IDX is None:
         return None, None
     amax = float(np.abs(vec).max()) or 1.0
-    q = np.rint(vec / amax * 127).clip(-128, 127).astype(np.float32)
+    q = np.rint(vec / amax * 127).clip(-127, 127).astype(np.float32)
     t0 = time.perf_counter()
     _, ids = FAISS_IDX.search(q, k)
     return ids[0], (time.perf_counter() - t0) * 1000.0
