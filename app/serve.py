@@ -221,10 +221,30 @@ def api_search(q: str, k: int = 10):
     vec = embed(q)
     embed_ms = (time.perf_counter() - t0) * 1000.0
 
-    ids, sq8_ms = search_sq8(vec, k)
-    f_ids, faiss_ms = search_faiss(vec, k)
+    # Over-fetch so duplicates can be dropped without leaving short results.
+    # About 0.6% of the corpus is exact-duplicate text, which sounds harmless
+    # and is not: identical passages score identically, so a duplicate that
+    # ranks at all ranks every copy of itself, and one answer took three of
+    # the ten slots on the first query anyone tried. Both backends fetch the
+    # same widened k so the timings and the agreement figure stay comparable.
+    over = min(k * 3, MAX_K)
+    ids, sq8_ms = search_sq8(vec, over)
+    f_ids, faiss_ms = search_faiss(vec, over)
 
-    results = [STORE.get(int(i)) for i in ids if 0 <= int(i) < MANIFEST["n"]]
+    results, seen = [], set()
+    for i in ids:
+        i = int(i)
+        if not 0 <= i < MANIFEST["n"]:
+            continue
+        row = STORE.get(i)
+        key = row["text"]
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(row)
+        if len(results) >= k:
+            break
+
     overlap = None
     if f_ids is not None:
         overlap = len(set(ids.tolist()) & set(f_ids.tolist())) / max(len(ids), 1)
