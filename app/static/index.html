@@ -143,10 +143,14 @@ function render(d) {
 
   // Built as nodes, not as a template string. Every field here is corpus
   // text: 3,257 of the three million indexed titles contain a real HTML tag,
-  // some of them literally "<script></script>", because Stack Exchange
-  // questions are full of markup people are asking about. Interpolating any
-  // of that into innerHTML is stored XSS on a public page. textContent cannot
-  // be talked into parsing, so the escaping is not something to get right.
+  // including script tags, because Stack Exchange questions are full of
+  // markup people are asking about. Interpolating that into innerHTML is
+  // stored XSS on a public page. textContent cannot be talked into parsing,
+  // so the escaping is not something to get right.
+  //
+  // Note the shape of this comment. Writing that tag name with its closing
+  // slash, even inside a JS comment, ends the script element and dumps the
+  // rest of this file onto the page as text. It did exactly that, once.
   const results = $('results');
   results.textContent = '';
   for (const r of d.results) {
