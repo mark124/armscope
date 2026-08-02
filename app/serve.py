@@ -202,10 +202,21 @@ except ImportError:
 app = FastAPI()
 
 
+MAX_K = 100
+MAX_Q = 512
+
+
 @app.get("/api/search")
 def api_search(q: str, k: int = 10):
     if not q.strip():
         return JSONResponse({"error": "empty query"}, status_code=400)
+    # k reached the heap unchecked. Zero and negative values returned a 500,
+    # and a large one was free amplification: the cost of a query is linear in
+    # k on both backends, so k=100000 turned one request into a lot of work.
+    k = max(1, min(int(k), MAX_K))
+    # The encoder truncates at 256 tokens anyway, so a megabyte of query text
+    # only ever cost tokenizer time.
+    q = q[:MAX_Q]
     t0 = time.perf_counter()
     vec = embed(q)
     embed_ms = (time.perf_counter() - t0) * 1000.0

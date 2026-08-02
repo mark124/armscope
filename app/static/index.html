@@ -128,23 +128,57 @@ function render(d) {
   $('ms-sq8').textContent = fast ? fast.toFixed(1) + ' ms' : 'n/a';
 
   if (d.speedup) {
+    const v = $('verdict');
+    v.hidden = false;
+    v.textContent = '';
+    const lead = document.createElement('b');
+    lead.textContent = `${d.speedup}x faster`;
     const same = d.same_results === null ? '' :
       ` Both returned ${Math.round(d.same_results * 100)}% the same passages.`;
-    $('verdict').hidden = false;
-    $('verdict').innerHTML =
-      `<b>${d.speedup}x faster</b> on this query, same machine, same moment.` +
-      same + ` Embedding the query took ${d.timing_ms.embed.toFixed(1)} ms and is
-      common to both.`;
+    v.append(lead, document.createTextNode(
+      ` on this query, same machine, same moment.${same}` +
+      ` Embedding the query took ${d.timing_ms.embed.toFixed(1)} ms` +
+      ` and is common to both.`));
   }
 
-  $('results').innerHTML = d.results.map(r => `
-    <div class="r">
-      <div class="t"><span class="tag">${r.source}</span>
-        <a href="${r.url}" target="_blank" rel="noopener">${
-          r.title || 'untitled'}</a></div>
-      <div class="p">${r.text.replace(/[<>&]/g, c =>
-        ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</div>
-    </div>`).join('');
+  // Built as nodes, not as a template string. Every field here is corpus
+  // text: 3,257 of the three million indexed titles contain a real HTML tag,
+  // some of them literally "<script></script>", because Stack Exchange
+  // questions are full of markup people are asking about. Interpolating any
+  // of that into innerHTML is stored XSS on a public page. textContent cannot
+  // be talked into parsing, so the escaping is not something to get right.
+  const results = $('results');
+  results.textContent = '';
+  for (const r of d.results) {
+    const row = document.createElement('div');
+    row.className = 'r';
+
+    const head = document.createElement('div');
+    head.className = 't';
+    const tag = document.createElement('span');
+    tag.className = 'tag';
+    tag.textContent = r.source;
+    head.append(tag);
+
+    // Only ever a link if the scheme is one we recognise, so a corpus that
+    // starts carrying javascript: URLs degrades to plain text.
+    const safe = /^https?:\/\//i.test(r.url || '');
+    const title = document.createElement(safe ? 'a' : 'span');
+    if (safe) {
+      title.href = r.url;
+      title.target = '_blank';
+      title.rel = 'noopener noreferrer';
+    }
+    title.textContent = r.title || 'untitled';
+    head.append(title);
+
+    const body = document.createElement('div');
+    body.className = 'p';
+    body.textContent = r.text;
+
+    row.append(head, body);
+    results.append(row);
+  }
 }
 
 async function run(q) {
