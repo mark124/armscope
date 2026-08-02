@@ -51,19 +51,36 @@ lib.sq8_set_num_threads.argtypes = [ctypes.c_int]
 
 
 class Store:
-    """Passage text, memory-mapped, plus per-passage metadata."""
+    """Passage text and metadata, both memory-mapped, neither resident.
+
+    The metadata used to be parsed into a list of dicts at startup. At three
+    million passages that is a 522MB file becoming several gigabytes of Python
+    objects, on a box chosen to have eight, to serve ten rows per query. Both
+    files are mapped instead and a row is parsed only when it is returned.
+
+    meta.jsonl has no offset table of its own, so it is indexed by finding its
+    newlines once. numpy scans the mapping in about a second and the result is
+    24MB of int64, against re-reading 522MB of JSON on every request.
+    """
 
     def __init__(self, d: pathlib.Path):
         self.offsets = np.fromfile(d / "offsets.i64", dtype=np.int64)
-        f = open(d / "text.bin", "rb")
-        self.mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-        self.meta = [json.loads(line) for line in
-                     open(d / "meta.jsonl", encoding="utf-8")]
+        self._text_f = open(d / "text.bin", "rb")
+        self.mm = mmap.mmap(self._text_f.fileno(), 0, access=mmap.ACCESS_READ)
+
+        self._meta_f = open(d / "meta.jsonl", "rb")
+        self.meta_mm = mmap.mmap(self._meta_f.fileno(), 0,
+                                 access=mmap.ACCESS_READ)
+        ends = np.flatnonzero(
+            np.frombuffer(self.meta_mm, dtype=np.uint8) == 0x0A)
+        self.meta_starts = np.concatenate(([0], ends[:-1] + 1))
+        self.meta_ends = ends
 
     def get(self, i: int) -> dict:
         a, b = int(self.offsets[i]), int(self.offsets[i + 1])
-        m = self.meta[i]
-        return {"text": self.mm[a:b].decode("utf-8", "replace"), **m}
+        ma, mb = int(self.meta_starts[i]), int(self.meta_ends[i])
+        return {"text": self.mm[a:b].decode("utf-8", "replace"),
+                **json.loads(self.meta_mm[ma:mb])}
 
 
 def load():
