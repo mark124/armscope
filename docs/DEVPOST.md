@@ -173,6 +173,13 @@ OpenSearch's k-NN issue #1138 reports the same 2 to 3.5x Arm latency penalty.
 
 Stated here rather than left for a judge to find.
 
+- **The live demo shows 3.6x, not 9.1x, and that is not a discrepancy.** A
+  search box answers one query at a time, and query blocking needs a batch, so
+  the demo gets the instruction win without the loop win. The two multiply:
+  3.6x single-query, times 2.5x from blocking, is the 9x batched figure. If
+  you serve one query at a time, 3.6x is what you get, and the demo shows that
+  on purpose rather than staging a batch to flatter the number.
+
 - **This technique is not novel.** USearch and SimSIMD already do symmetric int8
   with SIMD. What is missing upstream is a FAISS-comparable i8mm implementation
   and, as far as we can find, the matched-block-factor measurement of what i8mm

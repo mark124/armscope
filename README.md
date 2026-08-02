@@ -41,6 +41,21 @@ were added to accelerate.
 - **8.0x faster than FAISS's exact float32 search**, giving up 1.9 points of
   recall. Different claim, stated separately rather than blended in.
 
+### Why the live demo says 3.6x and this page says 9.1x
+
+Both are true and they are not the same measurement, so here is the
+reconciliation rather than leaving you to find the gap.
+
+The live demo answers **one query at a time**, because that is what a search
+box does. Query blocking, which is worth 2.5x at this scale, needs a batch to
+work with and gets none of it at a batch of one. So the demo shows the
+instruction win without the loop win: FAISS 185ms against sq8 52ms, **3.6x**.
+
+The 9.1x above is a **batched** throughput measurement, where blocking applies.
+The two numbers multiply out: 3.6x from the kernel, 2.5x from blocking queries
+into one pass, which is the 9x. If you only ever serve single queries, 3.6x is
+the number you should expect, and it is the one the demo shows on purpose.
+
 ### Against PQ fast-scan, which is the real competition
 
 Quoting a speedup against only the slowest baseline is not a speedup, so
