@@ -35,7 +35,13 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from bench_vs_faiss import KERNELS, lib  # noqa: E402
 
 D = 384
-SIZES = [500_000, 1_000_000, 2_000_000, 4_000_000, 6_000_000]
+# Three million is the ceiling on a 4GB device, and the reason is worth
+# stating: building an index needs the source codes and the index's own copy
+# resident together, so the build peak is roughly twice the finished size.
+# Four million was killed by the OOM reaper at 3.6GB resident. A deployed
+# device would load a prebuilt index and not pay this, but the benchmark
+# builds one, so it stops where the build stops.
+SIZES = [500_000, 1_000_000, 2_000_000, 3_000_000]
 REPEATS = 5
 # Below this a search feels immediate; above it a person notices waiting.
 INTERACTIVE_MS = 250.0
@@ -130,7 +136,10 @@ def main() -> None:
             faiss.METRIC_INNER_PRODUCT)
 
         def chunk(rows):
-            return rng.integers(-127, 128, size=(rows, D)).astype(np.float32)
+            # int8 first: asking numpy for a default-width integer array of
+            # 100k by 384 allocates 300MB to throw away.
+            return rng.integers(-127, 128, size=(rows, D),
+                                dtype=np.int8).astype(np.float32)
 
         f.train(chunk(min(STEP, n)))
         left = n
