@@ -194,8 +194,8 @@ def search_faiss(vec: np.ndarray, k: int):
 
 
 try:
-    from fastapi import FastAPI
-    from fastapi.responses import HTMLResponse, JSONResponse
+    from fastapi import FastAPI, Response
+    from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 except ImportError:
     raise SystemExit("pip install fastapi uvicorn")
 
@@ -277,6 +277,20 @@ def api_manifest():
 @app.get("/", response_class=HTMLResponse)
 def index():
     return (HERE / "static" / "index.html").read_text(encoding="utf-8")
+
+
+@app.get("/favicon.svg")
+def favicon():
+    return Response((HERE / "static" / "favicon.svg").read_bytes(),
+                    media_type="image/svg+xml",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/favicon.ico")
+def favicon_ico():
+    """Browsers ask for this by name whether or not the page links an icon.
+    Point them at the SVG rather than letting the request 404."""
+    return RedirectResponse("/favicon.svg", status_code=301)
 
 
 if __name__ == "__main__":

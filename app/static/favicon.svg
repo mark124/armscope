@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img"
+     aria-label="two race bars, a long slow one and a short fast one">
+  <!-- The demo's own picture: the stock index against ours, same query, same
+       moment. Two bars of obviously different length is the one thing from
+       this page that still reads at sixteen pixels, which a magnifier or a
+       wordmark would not. The dark tile keeps it legible on both a light and
+       a dark tab strip, so it needs no theme variant. -->
+  <rect width="64" height="64" rx="14" fill="#0d1117"/>
+  <rect x="12" y="20" width="40" height="9" rx="4.5" fill="#d29922"/>
+  <rect x="12" y="36" width="14" height="9" rx="4.5" fill="#3fb950"/>
+</svg>
