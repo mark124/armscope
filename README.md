@@ -180,6 +180,50 @@ It stores unsigned codes in [0, 255], so for inner product on signed normalized
 vectors the shared +127.5 offset dominates every dot product and destroys the
 ranking. It is structurally unusable for this metric, not merely mistuned.
 
+## How these numbers were measured, including where the setup is friendly
+
+Four things a reviewer should know before trusting the tables, stated here
+rather than left to be discovered.
+
+**Best-of-N for kernels, median for the server.** The kernel benchmarks take
+the fastest of several runs, which is standard for a microbenchmark because
+the thing being measured is the code path and the slow runs are the machine
+doing something else. The concurrency benchmark takes medians, because there
+contention *is* the thing being measured and discarding it would be cheating.
+Both are applied identically to sq8 and to FAISS, so neither choice moves the
+ratio.
+
+**The recall queries are in-distribution.** They are drawn from the same
+corpus as the database, so they are passage-shaped rather than question-
+shaped. That is normal for approximate-nearest-neighbour evaluation, and it
+is friendlier than the live demo, where people type questions. The recall
+figure describes how faithfully sq8 reproduces an exact scan, not how good
+the embedding model is at answering questions.
+
+**The recall corpus and the demo corpus are different text.** Recall is
+measured on 20 Newsgroups; the demo runs on Wikipedia, Stack Exchange, arXiv
+and Project Gutenberg. Both are real embeddings rather than Gaussian noise,
+which is the part that matters for quantization (real data is 4.7 anisotropic
+against 1.3 for Gaussian, and skew is what hurts a uniform quantizer), but
+they are not the same measurement and should not be read as one.
+
+**"At better recall" comes from the representation, not from Arm.** sq8 keeps
+a scale per vector. `QT_8bit_direct_signed`, the fastest FAISS int8 mode,
+structurally cannot, so it is fed a single global scale. That is a fair
+comparison in the sense that each system gets the best form its own design
+allows, and FAISS's own trained modes reach comparable recall at lower speed.
+But the recall edge is a consequence of a design choice, sitting next to a
+speed claim that is about instructions. They are two different results.
+
+### A coherence check worth making explicit
+
+Parallelism in the search is over query *blocks*, not over the database. So a
+single query runs on one core whatever the thread count, which is why the
+concurrency table has the shape it does: two queries in flight barely degrade
+on a two-core box, while four roughly double the latency. The measured
+numbers are what the code predicts, which is weak evidence that neither is
+lying.
+
 ## What this costs you: memory
 
 Scalar quantization exists to save memory, so the memory number belongs next to
