@@ -283,25 +283,34 @@ def api_search(q: str, k: int = 10):
     # returns "List of Anglo-Welsh wars" three times and looks broken. Text is
     # deduplicated as well, since the same passage appears under more than one
     # URL often enough to matter.
-    results, seen_doc, seen_text = [], set(), set()
-    for i in ids:
-        i = int(i)
-        if not 0 <= i < MANIFEST["n"]:
-            continue
-        row = STORE.get(i)
-        doc = row.get("url") or row["text"]
-        if doc in seen_doc or row["text"] in seen_text:
-            continue
-        seen_doc.add(doc)
-        seen_text.add(row["text"])
+    def collapse(order, limit):
+        """One passage per source document, best-ranked wins, duplicate text
+        dropped. A long article chunks into many passages and a query that
+        matches the article matches several, so without this the Battle of
+        Hastings returns the same page three times."""
+        out, seen_doc, seen_text = [], set(), set()
+        for i in order:
+            i = int(i)
+            if not 0 <= i < MANIFEST["n"]:
+                continue
+            row = STORE.get(i)
+            doc = row.get("url") or row["text"]
+            if doc in seen_doc or row["text"] in seen_text:
+                continue
+            seen_doc.add(doc)
+            seen_text.add(row["text"])
+            row["id"] = i
+            out.append(row)
+            if len(out) >= limit:
+                break
+        return out
+
+    results = collapse(ids, k)
+    for row in results:
         # Cosine, because both sides are L2-normalized before quantizing.
         # Shown in the UI: without it a reader cannot tell a strong hit from
         # the best of a bad lot, and every query returns ten of something.
-        row["score"] = round(by_id.get(i, 0.0), 4)
-        row["id"] = i
-        results.append(row)
-        if len(results) >= k:
-            break
+        row["score"] = round(by_id.get(row["id"], 0.0), 4)
 
     # Agreement over what is on screen, not over the widened fetch. Computing
     # it at depth 60 and captioning it "the same passages" described the ten
@@ -314,9 +323,14 @@ def api_search(q: str, k: int = 10):
     if f_ids is not None:
         deep_a, deep_b = set(ids.tolist()), set(f_ids.tolist())
         overlap_deep = len(deep_a & deep_b) / max(len(ids), 1)
-        shown = [int(r["id"]) for r in results]
-        top_f = [int(i) for i in f_ids.tolist()[:len(shown)]]
-        overlap = (len(set(shown) & set(top_f)) / len(shown)) if shown else None
+        # Both sides collapsed the same way before comparing. Measuring
+        # deduplicated results against a raw list is not an agreement figure,
+        # it is a measurement of the deduplication, and it read 0.40 where the
+        # two backends actually agreed almost completely.
+        shown = [r["id"] for r in results]
+        faiss_shown = [r["id"] for r in collapse(f_ids, len(shown))]
+        overlap = (len(set(shown) & set(faiss_shown)) / len(shown)
+                   if shown else None)
 
     return {
         "query": q,
