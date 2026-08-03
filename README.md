@@ -17,6 +17,40 @@ right meant catching four separate ways of fooling ourselves, each of which
 had already produced a published figure that was wrong. Those are documented
 below rather than quietly corrected.
 
+## Why it matters: it moves the limit from the CPU to the memory
+
+Offline semantic search is the thing people want from these devices. It is
+the reason to carry an encyclopedia, an archive, or a document dump on
+hardware that has no network and answers to nobody. The blocker has always
+been that a flat scan over a corpus worth having is too slow on a board.
+
+Measured on Neoverse N1 with dotprod and no i8mm, two cores, 4GB, which is
+the same Armv8.2 generation and instruction set as a Raspberry Pi 5's
+Cortex-A76 ([`bench/ondevice.py`](bench/ondevice.py),
+[`results/ondevice.json`](results/ondevice.json)). Single query, k=10, 384
+dimensions:
+
+| passages | index | FAISS int8 | sq8 | interactive under 250ms? |
+| --- | --- | --- | --- | --- |
+| 500,000 | 194 MB | 52.9 ms | 14.2 ms | both |
+| 1,000,000 | 388 MB | 100.6 ms | 27.5 ms | both |
+| 2,000,000 | 776 MB | 202.3 ms | 57.4 ms | both |
+| 3,000,000 | 1.2 GB | 301.6 ms | **86.4 ms** | **sq8 only** |
+
+**FAISS stops being interactive at about 2.5 million passages. sq8 would keep
+going to roughly 8.7 million, which is further than a 4GB device can store.**
+
+That is the whole point in one line: with the stock index the processor
+decides how much you can carry, and on a board the processor is not something
+you can change. With this one, memory decides, and memory is a number you can
+buy. An 8GB Pi holds around 8 million passages and still answers in well
+under a quarter second.
+
+Note what is *not* claimed here. This class of device has no i8mm, so the
+1.29x from SMMLA does not apply and sq8 runs the SDOT path. The gain above is
+3.5x to 3.7x, and it comes from an instruction a Pi 5 has and FAISS's scalar
+quantizer structurally cannot reach.
+
 ---
 
 **FAISS's scalar-quantizer index is slower on Arm than not quantizing at all.

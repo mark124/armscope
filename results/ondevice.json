@@ -1,0 +1,47 @@
+{
+  "device": {
+    "dotprod": true,
+    "i8mm": false,
+    "cores": 2
+  },
+  "rows": [
+    {
+      "n": 500000,
+      "index_mb": 194,
+      "faiss_ms": 52.9,
+      "sq8_ms": 14.2,
+      "gain": 3.73,
+      "sq8_interactive": true,
+      "faiss_interactive": true
+    },
+    {
+      "n": 1000000,
+      "index_mb": 388,
+      "faiss_ms": 100.6,
+      "sq8_ms": 27.5,
+      "gain": 3.66,
+      "sq8_interactive": true,
+      "faiss_interactive": true
+    },
+    {
+      "n": 2000000,
+      "index_mb": 776,
+      "faiss_ms": 202.3,
+      "sq8_ms": 57.4,
+      "gain": 3.53,
+      "sq8_interactive": true,
+      "faiss_interactive": true
+    },
+    {
+      "n": 3000000,
+      "index_mb": 1164,
+      "faiss_ms": 301.6,
+      "sq8_ms": 86.4,
+      "gain": 3.49,
+      "sq8_interactive": true,
+      "faiss_interactive": false
+    }
+  ],
+  "interactive_threshold_ms": 250.0,
+  "peak_rss_gb": 2.32
+}

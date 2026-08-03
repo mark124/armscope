@@ -22,6 +22,35 @@ the fastest working FAISS int8 mode, at better recall.
 
 ---
 
+## Why this exists
+
+Last year this challenge was won by on-device semantic search, and second
+place went to natural-language queries on a Raspberry Pi for field workers
+with no connectivity. The judges said what they were looking for: offline
+workflows that keep data on the device, and things that work where the
+network does not.
+
+Both of those run into the same wall. Semantic search over a corpus worth
+carrying means scanning millions of vectors, and on a board that is slow
+enough to feel broken.
+
+We measured where the wall is, on Neoverse N1 with dotprod and no i8mm, two
+cores and 4GB, the same generation and instruction set as a Pi 5:
+
+| passages | FAISS int8 | sq8 | interactive? |
+| --- | --- | --- | --- |
+| 1,000,000 | 100.6 ms | 27.5 ms | both |
+| 2,000,000 | 202.3 ms | 57.4 ms | both |
+| 3,000,000 | 301.6 ms | **86.4 ms** | **sq8 only** |
+
+**The stock index stops being interactive at about 2.5 million passages. Ours
+would keep going to roughly 8.7 million, past what a 4GB device can hold.**
+
+So the limit moves off the processor and onto the memory. On a board the
+processor is fixed; memory is a number you can buy. That is the difference
+between an offline library that fits and one that does not, and it comes from
+an instruction the board already has and the stock index cannot reach.
+
 ## Inspiration
 
 FAISS is the default vector index for most retrieval systems, and its
