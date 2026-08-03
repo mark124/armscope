@@ -91,14 +91,26 @@ static void test_kernels_agree(void) {
      * identical float scaling give identical floats, so anything other than
      * exact equality is a real disagreement. */
     printf("\nsmmla 2x2 tile agrees with scalar, at every dimension\n");
+    if (!cpu.has_i8mm) {
+        /* Forcing SMMLA on a CPU without it silently resolves to the SDOT
+         * path, and the comparison then passes while testing nothing. CI is
+         * covered by the assertion that the binary contains SMMLA at all;
+         * someone running this on a Pi is not, so say it out loud. */
+        check(1, "skipped: this CPU has no i8mm, the tile cannot be exercised");
+        return;
+    }
     for (size_t di = 0; di < sizeof(dims) / sizeof(dims[0]); di++) {
         const int d = dims[di], k = 3;
-        const int64_t n = 7, nq = 4;      /* odd n and even nq hit both tails */
+        /* Both odd. n odd leaves a database vector without a pair for the
+         * tile; nq odd leaves a query without a partner, which is the
+         * `nqb & 1` branch. An even nq is precisely what does not reach it,
+         * which is what this said before. */
+        const int64_t n = 7, nq = 5;
         float *base = make_vectors(n, d, 400 + d);
         float *qry = make_vectors(nq, d, 900 + d);
 
-        int64_t ids[2][4 * 3];
-        float sc[2][4 * 3];
+        int64_t ids[2][5 * 3];
+        float sc[2][5 * 3];
         for (int pass = 0; pass < 2; pass++) {
             sq8_force_kernel(pass ? SQ8_KERNEL_SMMLA : SQ8_KERNEL_SCALAR);
             sq8_index_t *idx = sq8_build(base, n, d);

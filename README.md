@@ -377,8 +377,8 @@ Locally, on any aarch64 Linux host:
 
 ```sh
 cd sq8
-gcc -O2 -Wall -march=armv8.2-a+dotprod+i8mm -o test_sq8 test_sq8.c sq8.c -lm
-./test_sq8
+bash build.sh test     # two compiles: the kernels, and the reference with
+./test_sq8             # vectorisation off, which one gcc line cannot express
 ```
 
 ## Correctness comes before speed

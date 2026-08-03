@@ -2,18 +2,21 @@ name: roofline
 
 # Does blocking queries convert i8mm's small win into a real one?
 #
-# Held at a matched block factor i8mm is worth 1.00x over SDOT on a flat scan
+# Held at a matched block factor, i8mm is worth 1.00x over SDOT on a flat scan
 # and 1.29x at sixteen queries per pass. An earlier figure of 1.31x compared
 # SMMLA at its 2x2 tiling against SDOT with none, so it priced the loop order
-# and the instruction together, and is withdrawn. What follows is the sweep
-# that established that, plus the roofline it was predicted from. The
-# prediction was wrong: the scan sits at 54% of the measured bandwidth roof,
-# not the 95% we expected, which is a poor
-# return on a dedicated matrix instruction. The stated reason is that a flat
-# int8 scan does one multiply-accumulate per byte read, so it is pinned against
-# memory bandwidth and SMMLA spends its time waiting. This tests that reading
-# directly, by raising the work done per byte and seeing whether throughput
-# follows, with both ceilings measured on the same core.
+# and the instruction together, and is withdrawn.
+#
+# We predicted the reason was bandwidth: one multiply-accumulate per byte read
+# should pin the scan against memory and leave SMMLA waiting, at about 95% of
+# what the memory system can stream. That prediction is also withdrawn. Both
+# ceilings measured on the same core in the same run put the scan at 54% of a
+# 35.5 GB/s roof, balanced at the knee rather than against the wall.
+#
+# Blocking helped anyway, 2.02x for SDOT and 2.54x for SMMLA at four million
+# vectors, which is why this workflow still exists: it is the sweep that
+# established the matched-factor numbers above, and the roofline that
+# falsified the reasoning they came from.
 on:
   workflow_dispatch:
   push:

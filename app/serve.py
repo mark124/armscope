@@ -203,46 +203,67 @@ app = FastAPI()
 
 
 MAX_K = 100
+# Separate from MAX_K so the over-fetch headroom does not vanish as k grows.
+# With one cap for both, k=100 fetched 100 and returned 42 after deduplication
+# without saying so.
+MAX_FETCH = 400
 MAX_Q = 512
 
-# When to admit the answer is probably wrong, per source.
+# When to admit the answer is probably not one.
 #
-# A single floor catches noise and misses the failure this corpus actually
-# produces. Invented words top out at 0.42 to 0.50, so 0.55 flags them. But
-# the confident-but-wrong cases score far higher and are almost all Project
-# Gutenberg: "what caused the fall of Rome" returns Victorian narrative at
-# 0.629, sourdough returns a prairie romance at 0.644, the Battle of Hastings
-# returns a literary survey at 0.646.
+# A flat floor of 0.55 catches noise: invented words top out at 0.42 to 0.50.
+# It misses the failure this corpus actually produces, which scores 0.63 to
+# 0.65 and is almost always Project Gutenberg.
 #
-# Gutenberg is book-length narrative prose. It reads as vaguely relevant to
-# almost any question, so it clears a noise floor while being useless. Across
-# the queries that work, Gutenberg never takes the top slot at all and peaks
-# at 0.70 further down, while a good top hit from the other sources runs 0.72
-# to 0.80. A Gutenberg passage in first place below 0.70 is therefore the
-# signature of the failure rather than of an answer.
-FLOOR = {"gutenberg": 0.70}
+# The first fix was a higher floor for Gutenberg, and measuring it properly
+# showed that was wrong too. Across eleven probes aimed at what Gutenberg
+# actually contains, its top-hit scores run 0.565 to 0.726, and good and bad
+# answers are interleaved inside that range: a whaling query returns an
+# unrelated California memoir at 0.726, while a ghost-story query returns a
+# genuinely apt Grace Greenwood passage at 0.656. A 0.70 floor would have
+# passed the wrong one and flagged the right one.
+#
+# So for this source the score does not carry the information a threshold
+# needs. That is a fact about book-length narrative prose against a
+# sentence-embedding model, not something to tune around: long prose reads as
+# moderately similar to almost any question. The honest interface is to say
+# so whenever a Gutenberg passage takes the top slot, rather than to imply a
+# confidence the number cannot support.
 FLOOR_DEFAULT = 0.55
+UNRANKABLE = {"gutenberg"}
 
 
 def confidence(results: list[dict]) -> dict:
     """Should the caller be told the top answer is probably not an answer?"""
     if not results:
-        return {"low_confidence": True, "floor": FLOOR_DEFAULT,
+        return {"low_confidence": True, "confidence_kind": "empty",
                 "confidence_note": "nothing was returned"}
     top = results[0]
-    floor = FLOOR.get(top.get("source", ""), FLOOR_DEFAULT)
-    if top["score"] >= floor:
-        return {"low_confidence": False, "floor": floor}
-    if floor != FLOOR_DEFAULT:
-        note = (f"the best match is {top['source']} prose at "
-                f"{top['score']:.2f}, under the {floor} this source needs to "
-                f"be worth reading: long-form narrative scores moderately "
-                f"against almost any question")
-    else:
-        note = (f"nothing scored above {floor}, best {top['score']:.2f}; an "
-                f"exhaustive search returns its nearest neighbours even when "
-                f"nothing is near")
-    return {"low_confidence": True, "floor": floor, "confidence_note": note}
+
+    if top.get("source") in UNRANKABLE:
+        return {
+            "low_confidence": True,
+            "confidence_kind": "unrankable",
+            "confidence_note": (
+                f"the top result is a book, and for this source the score "
+                f"({top['score']:.2f}) does not tell you whether it answers "
+                f"the question. Measured across probes, good and bad "
+                f"book matches land in the same range, because long prose "
+                f"reads as moderately similar to almost anything. Judge this "
+                f"one by reading it"),
+        }
+
+    if top["score"] >= FLOOR_DEFAULT:
+        return {"low_confidence": False, "confidence_kind": "ok"}
+
+    return {
+        "low_confidence": True,
+        "confidence_kind": "noise",
+        "confidence_note": (
+            f"nothing scored above {FLOOR_DEFAULT}, best "
+            f"{top['score']:.2f}; an exhaustive search returns its nearest "
+            f"neighbours even when nothing is near"),
+    }
 
 
 @app.get("/api/search")
@@ -272,7 +293,7 @@ def api_search(q: str, k: int = 10):
     # ranks at all ranks every copy of itself, and one answer took three of
     # the ten slots on the first query anyone tried. Both backends fetch the
     # same widened k so the timings and the agreement figure stay comparable.
-    over = min(k * 6, MAX_K)
+    over = min(k * 6, MAX_FETCH)
     ids, sq8_scores, sq8_ms = search_sq8(vec, over)
     f_ids, faiss_ms = search_faiss(vec, over)
     by_id = {int(i): float(s) for i, s in zip(ids, sq8_scores)}
@@ -283,6 +304,21 @@ def api_search(q: str, k: int = 10):
     # returns "List of Anglo-Welsh wars" three times and looks broken. Text is
     # deduplicated as well, since the same passage appears under more than one
     # URL often enough to matter.
+    # Both collapses walk lists that overlap almost completely, so the second
+    # one used to repeat the first one's mmap reads and json.loads. That work
+    # sits outside both timers, so it never showed up in a reported latency,
+    # but on two cores it contends with the searches and steals proportionally
+    # more from a 51ms scan than from a 185ms one. It cost about 0.2x off the
+    # ratio at four queries in flight, which is how a correctness fix quietly
+    # moved the headline number.
+    fetched: dict[int, dict] = {}
+
+    def row_for(i: int) -> dict:
+        row = fetched.get(i)
+        if row is None:
+            row = fetched[i] = STORE.get(i)
+        return row
+
     def collapse(order, limit):
         """One passage per source document, best-ranked wins, duplicate text
         dropped. A long article chunks into many passages and a query that
@@ -293,7 +329,7 @@ def api_search(q: str, k: int = 10):
             i = int(i)
             if not 0 <= i < MANIFEST["n"]:
                 continue
-            row = STORE.get(i)
+            row = row_for(i)
             doc = row.get("url") or row["text"]
             if doc in seen_doc or row["text"] in seen_text:
                 continue
@@ -342,6 +378,8 @@ def api_search(q: str, k: int = 10):
         "same_results": overlap,
         "same_results_at_depth": overlap_deep,
         "fetch_depth": over,
+        "requested": k,
+        "returned": len(results),
         **confidence(results),
         "kernel": KERNEL,
         "n": MANIFEST["n"],

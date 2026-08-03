@@ -256,10 +256,16 @@ function render(d) {
   // calibration belongs next to the data it was measured from. A flat bar
   // caught invented words and missed the failure this corpus actually makes,
   // which is Gutenberg narrative answering a history question at 0.64.
+  // Two different admissions, and calling both "weak match" was wrong. One
+  // says the query matched nothing. The other says the score cannot rank this
+  // source, which is not the same as saying the answer is bad: a good book
+  // passage and a useless one score alike.
   const nothingMatched = d.low_confidence;
   if (nothingMatched) {
-    say({body: `Weak match: ${d.confidence_note}. The closest passages are` +
-                ` shown anyway, so read them sceptically.`}, true);
+    const lead = d.confidence_kind === 'unrankable'
+      ? 'Ranking is unreliable here: '
+      : 'Weak match: ';
+    say({body: `${lead}${d.confidence_note}.`}, true);
   }
 
   for (const r of d.results) {
