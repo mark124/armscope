@@ -127,12 +127,12 @@
     <div class="lane">
       <span class="name">FAISS int8</span>
       <div class="track"><div class="bar slow" id="bar-faiss"></div></div>
-      <span class="ms" id="ms-faiss">—</span>
+      <span class="ms" id="ms-faiss">·</span>
     </div>
     <div class="lane">
       <span class="name">sq8 (this work)</span>
       <div class="track"><div class="bar fast" id="bar-sq8"></div></div>
-      <span class="ms" id="ms-sq8">—</span>
+      <span class="ms" id="ms-sq8">·</span>
     </div>
   </div>
   <p class="verdict" id="verdict" hidden></p>
@@ -184,8 +184,8 @@ function clearResults() {
   $('race').hidden = true;
   $('verdict').hidden = true;
   $('results').textContent = '';
-  $('ms-faiss').textContent = '—';
-  $('ms-sq8').textContent = '—';
+  $('ms-faiss').textContent = '·';
+  $('ms-sq8').textContent = '·';
   $('bar-faiss').style.width = '0';
   $('bar-sq8').style.width = '0';
 }
