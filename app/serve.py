@@ -227,20 +227,27 @@ def api_search(q: str, k: int = 10):
     # ranks at all ranks every copy of itself, and one answer took three of
     # the ten slots on the first query anyone tried. Both backends fetch the
     # same widened k so the timings and the agreement figure stay comparable.
-    over = min(k * 3, MAX_K)
+    over = min(k * 6, MAX_K)
     ids, sq8_ms = search_sq8(vec, over)
     f_ids, faiss_ms = search_faiss(vec, over)
 
-    results, seen = [], set()
+    # One passage per source document, best-ranked wins. A long article
+    # chunks into many passages and a query that matches the article matches
+    # several of them, so without this a search for the Battle of Hastings
+    # returns "List of Anglo-Welsh wars" three times and looks broken. Text is
+    # deduplicated as well, since the same passage appears under more than one
+    # URL often enough to matter.
+    results, seen_doc, seen_text = [], set(), set()
     for i in ids:
         i = int(i)
         if not 0 <= i < MANIFEST["n"]:
             continue
         row = STORE.get(i)
-        key = row["text"]
-        if key in seen:
+        doc = row.get("url") or row["text"]
+        if doc in seen_doc or row["text"] in seen_text:
             continue
-        seen.add(key)
+        seen_doc.add(doc)
+        seen_text.add(row["text"])
         results.append(row)
         if len(results) >= k:
             break
