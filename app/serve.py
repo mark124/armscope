@@ -214,9 +214,15 @@ def api_search(q: str, k: int = 10):
     # and a large one was free amplification: the cost of a query is linear in
     # k on both backends, so k=100000 turned one request into a lot of work.
     k = max(1, min(int(k), MAX_K))
-    # The encoder truncates at 256 tokens anyway, so a megabyte of query text
-    # only ever cost tokenizer time.
-    q = q[:MAX_Q]
+    # Say no rather than truncating. The old behaviour capped the query at 512
+    # characters and returned 200, so a caller sending twenty thousand got a
+    # normal-looking answer to a question it had not asked, and nothing in the
+    # response admitted the difference. The maxlength on the input is a
+    # convenience for people, not a control: the API is reachable directly.
+    if len(q) > MAX_Q:
+        return JSONResponse(
+            {"error": f"query too long: {len(q)} characters, limit {MAX_Q}"},
+            status_code=413)
     t0 = time.perf_counter()
     vec = embed(q)
     embed_ms = (time.perf_counter() - t0) * 1000.0
