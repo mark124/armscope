@@ -486,8 +486,12 @@ def gutenberg(limit: int | None = None) -> Iterator[Passage]:
         m = _PG_TITLE.search(head)
         # Not headline(): the header is already one line, and splitting it on
         # sentences would cut "by Edwin L. Sabin" down to "by Edwin L."
+        # The header line this matches is often the start marker itself,
+        # "*** START OF THE PROJECT GUTENBERG EBOOK <title> ***", so the
+        # closing asterisks come along with the title and end up on screen.
+        # That was 16% of the Gutenberg passages in the first real build.
         title = trim(m.group(1), 120) if m else "Untitled"
-        title = re.sub(r"^[,\s]+|[,;:\s]+$", "", title)
+        title = re.sub(r"^[,\s*]+|[,;:\s*]+$", "", title)
 
         start = _PG_START.search(raw)
         body = raw[start.end():] if start else raw

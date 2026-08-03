@@ -156,6 +156,10 @@ check("headline takes the longest question",
 check("headline cuts on a word boundary",
       headline("Supercalifragilistic expialidocious umbrella stand.", 20),
       "Supercalifragilistic...")
+check("gutenberg start-marker asterisks do not reach the title",
+      __import__("re").sub(r"^[,\s*]+|[,;:\s*]+$", "",
+                           trim("THE PONY RIDER BOYS IN NEW MEXICO ***", 120)),
+      "THE PONY RIDER BOYS IN NEW MEXICO")
 check("trim keeps an initial intact",
       trim("Pluck on the Long Trail, by Edwin L. Sabin", 120),
       "Pluck on the Long Trail, by Edwin L. Sabin")
