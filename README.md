@@ -1,5 +1,24 @@
 # armscope
 
+**int8 vector search for Arm that is 9.1x faster than the fastest working
+FAISS int8 mode, at slightly better recall.**
+
+| | |
+| --- | --- |
+| **The claim** | FAISS's scalar quantizer keeps the query in float, so its inner loop can never reach `SDOT` or `SMMLA`. Quantizing the query too makes it eligible, and the Arm instruction stack is then worth 14.6x. |
+| **The number** | 2,106 QPS against 231, recall 0.981 against 0.978, one Neoverse N2 core, 60k real MiniLM embeddings. |
+| **The catch** | The design change alone is *slower* than FAISS. All the speed is the instructions. i8mm specifically is worth nothing on a flat scan and 1.29x once queries are blocked. The technique is not novel; USearch and SimSIMD already do symmetric int8. |
+| **Live** | [search.rowset.co](https://search.rowset.co) searches 3M passages on two Arm cores and races both indexes on every query. It shows ~3.6x, because a search box sends one query at a time and blocking needs a batch. |
+| **Reproduce** | `cd sq8 && bash build.sh test && ./test_sq8` then `pip install -r app/requirements.txt && python bench/bench_real_embeddings.py`. Every benchmark also runs in CI on free Arm runners. |
+
+**What this repo actually contributes**, since the technique is not new: a
+trustworthy number for a widely repeated but unverified claim. Getting it
+right meant catching four separate ways of fooling ourselves, each of which
+had already produced a published figure that was wrong. Those are documented
+below rather than quietly corrected.
+
+---
+
 **FAISS's scalar-quantizer index is slower on Arm than not quantizing at all.
 This fixes it.**
 
