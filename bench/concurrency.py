@@ -24,13 +24,14 @@ property of the system under contention and belongs in the number.
 
 from __future__ import annotations
 
+import http.client
 import json
 import pathlib
 import statistics
 import sys
+import threading
 import time
 import urllib.parse
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 BASE = (sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8000").rstrip("/")
@@ -50,19 +51,54 @@ QUERIES = [
 ]
 
 
-def one(q: str) -> tuple[float, float, float]:
+_local = threading.local()
+_parts = urllib.parse.urlsplit(BASE)
+failures = 0
+
+
+def _conn():
+    """One kept-alive connection per worker thread.
+
+    A new TLS handshake per request is both slower than the thing being
+    measured and enough load on its own that the server reset connections at
+    four in flight. Reusing the connection removes the handshake from the wall
+    figure and stops the benchmark from being its own bottleneck.
+    """
+    c = getattr(_local, "conn", None)
+    if c is None:
+        cls = (http.client.HTTPSConnection if _parts.scheme == "https"
+               else http.client.HTTPConnection)
+        c = _local.conn = cls(_parts.netloc, timeout=120)
+    return c
+
+
+def one(q: str) -> tuple[float, float, float] | None:
     """Server-reported FAISS and sq8 milliseconds, plus client wall time.
 
     The server figures exclude queueing, which is what makes them comparable
     between the two backends. Wall time is kept alongside so the cost of
-    contention is visible rather than hidden.
+    contention is visible rather than hidden. Returns None if the request
+    could not be completed, and the caller counts those rather than letting
+    one dropped connection end the run.
     """
-    url = f"{BASE}/api/search?q={urllib.parse.quote(q)}"
-    t0 = time.perf_counter()
-    with urllib.request.urlopen(url, timeout=120) as r:
-        d = json.loads(r.read())
-    wall = (time.perf_counter() - t0) * 1000.0
-    return d["timing_ms"]["faiss"], d["timing_ms"]["sq8"], wall
+    global failures
+    path = f"{_parts.path}/api/search?q={urllib.parse.quote(q)}"
+    for attempt in (1, 2):
+        try:
+            c = _conn()
+            t0 = time.perf_counter()
+            c.request("GET", path)
+            body = c.getresponse().read()
+            wall = (time.perf_counter() - t0) * 1000.0
+            d = json.loads(body)
+            return d["timing_ms"]["faiss"], d["timing_ms"]["sq8"], wall
+        except Exception:                       # noqa: BLE001
+            _local.conn = None                  # force a fresh connection
+            if attempt == 2:
+                failures += 1
+                return None
+            time.sleep(0.2)
+    return None
 
 
 def level(par: int, rounds: int, settle: float) -> dict:
@@ -70,9 +106,15 @@ def level(par: int, rounds: int, settle: float) -> dict:
     for _ in range(rounds):
         work = [QUERIES[i % len(QUERIES)] for i in range(par * PER_LEVEL)]
         with ThreadPoolExecutor(par) as ex:
-            for f, s, w in ex.map(one, work):
+            for got in ex.map(one, work):
+                if got is None:
+                    continue
+                f, s, w = got
                 faiss.append(f); sq8.append(s); wall.append(w)
         time.sleep(settle)
+    if not faiss:
+        return {"parallel": par, "faiss_ms": None, "sq8_ms": None,
+                "ratio": None, "wall_ms": None, "sq8_p90_ms": None, "n": 0}
     med = lambda xs: statistics.median(xs)  # noqa: E731
     return {
         "parallel": par,
@@ -108,9 +150,12 @@ def main() -> None:
         print(f"{par:9d} {r['faiss_ms']:9.1f} {r['sq8_ms']:8.1f} "
               f"{r['ratio']:6.2f}x {r['wall_ms']:8.1f}")
 
-    ratios = [r["ratio"] for r in out["spaced"] + out["burst"]]
+    ratios = [r["ratio"] for r in out["spaced"] + out["burst"] if r["ratio"]]
+    out["ratio_min"], out["ratio_max"] = min(ratios), max(ratios)
+    out["failed_requests"] = failures
     print(f"\nratio across every level and both load shapes: "
           f"{min(ratios):.2f}x to {max(ratios):.2f}x")
+    print(f"failed requests: {failures}")
     print("quote the floor, not the best case")
 
     p = pathlib.Path("results/concurrency.json")

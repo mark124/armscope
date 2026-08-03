@@ -72,13 +72,17 @@ on every query and races them on screen. The speedup is measured in front of
 you rather than quoted.
 
 The ratio is not an artifact of an idle machine. Saturating the two-core box,
-both paths degrade proportionally and the advantage holds:
+both paths degrade proportionally and the advantage holds at **roughly 3x**:
 
 | queries in flight | 1 | 2 | 4 | 8 |
 | --- | --- | --- | --- | --- |
-| FAISS int8 | 185.5 ms | 190.9 ms | 378.3 ms | 760.0 ms |
-| sq8 | 51.4 ms | 59.0 ms | 107.0 ms | 221.1 ms |
-| ratio | 3.61x | 3.23x | 3.54x | 3.44x |
+| FAISS int8 | 184.1 ms | 189.5 ms | 368.6 ms | 749.9 ms |
+| sq8 | 51.5 ms | 61.8 ms | 115.4 ms | 212.0 ms |
+| ratio | 3.57x | 3.06x | 3.19x | 3.54x |
+
+Measured over the internet against the live site with `bench/concurrency.py`,
+median of three rounds. Across both careful and burst load the range is 3.06x
+to 3.61x, which is why the claim is "roughly 3x" rather than a tighter band.
 
 ## How we built it
 

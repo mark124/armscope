@@ -41,21 +41,38 @@ were added to accelerate.
 - **8.0x faster than FAISS's exact float32 search**, giving up 1.9 points of
   recall. Different claim, stated separately rather than blended in.
 
-### The ratio survives contention
+### The ratio survives contention: roughly 3x
 
 A single-query number is a latency claim on an idle machine. The demo box has
-two cores, so here is what happens when it is saturated, median of three
-queries per level:
+two cores, so here is what happens when it is saturated. Run it yourself with
+[`bench/concurrency.py`](bench/concurrency.py); the raw output is committed at
+[`results/concurrency.json`](results/concurrency.json).
+
+Median of three rounds, measured across the public internet against the live
+site rather than on the box:
 
 | queries in flight | 1 | 2 | 4 | 8 |
 | --- | --- | --- | --- | --- |
-| FAISS int8 | 185.5 ms | 190.9 ms | 378.3 ms | 760.0 ms |
-| sq8 | 51.4 ms | 59.0 ms | 107.0 ms | 221.1 ms |
-| **ratio** | **3.61x** | **3.23x** | **3.54x** | **3.44x** |
+| FAISS int8 | 184.1 ms | 189.5 ms | 368.6 ms | 749.9 ms |
+| sq8 | 51.5 ms | 61.8 ms | 115.4 ms | 212.0 ms |
+| **ratio** | **3.57x** | **3.06x** | **3.19x** | **3.54x** |
 
-Both degrade proportionally past the core count, as they must, and the ratio
-holds between 3.2x and 3.6x throughout. The advantage is a property of the
-kernel, not an artifact of measuring one query on an idle box.
+Firing everything at once with no warm-up gives 3.61x, 3.17x, 3.33x, 3.55x.
+Across both load shapes and every level the range is **3.06x to 3.61x**, so
+the honest claim is **roughly 3x under contention**, not a tighter band.
+
+Both degrade proportionally past the core count, as they must. The advantage
+is a property of the kernel rather than of measuring one query on an idle box,
+which is the whole point of the table, and that argument needs the ratio to
+survive saturation rather than to hit a particular figure.
+
+> An earlier version of this table quoted a 3.2x to 3.6x band and slightly
+> faster sq8 times. Those were measured on the box in a single run, which
+> removed the network and flattered the shorter side of the comparison. The
+> numbers above come from the committed script over the internet, and three of
+> the four points sit below the band that was published. Note also that a
+> client opening a fresh TLS connection per request will read lower still: the
+> handshakes compete for the same two cores as the search.
 
 ### Why the live demo says 3.6x and this page says 9.1x
 
