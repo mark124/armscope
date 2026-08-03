@@ -178,7 +178,7 @@ def search_sq8(vec: np.ndarray, k: int):
                       1, k,
                       ids.ctypes.data_as(ctypes.POINTER(ctypes.c_int64)),
                       sc.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
-    return ids, (time.perf_counter() - t0) * 1000.0
+    return ids, sc, (time.perf_counter() - t0) * 1000.0
 
 
 def search_faiss(vec: np.ndarray, k: int):
@@ -228,8 +228,9 @@ def api_search(q: str, k: int = 10):
     # the ten slots on the first query anyone tried. Both backends fetch the
     # same widened k so the timings and the agreement figure stay comparable.
     over = min(k * 6, MAX_K)
-    ids, sq8_ms = search_sq8(vec, over)
+    ids, sq8_scores, sq8_ms = search_sq8(vec, over)
     f_ids, faiss_ms = search_faiss(vec, over)
+    by_id = {int(i): float(s) for i, s in zip(ids, sq8_scores)}
 
     # One passage per source document, best-ranked wins. A long article
     # chunks into many passages and a query that matches the article matches
@@ -248,6 +249,10 @@ def api_search(q: str, k: int = 10):
             continue
         seen_doc.add(doc)
         seen_text.add(row["text"])
+        # Cosine, because both sides are L2-normalized before quantizing.
+        # Shown in the UI: without it a reader cannot tell a strong hit from
+        # the best of a bad lot, and every query returns ten of something.
+        row["score"] = round(by_id.get(i, 0.0), 4)
         results.append(row)
         if len(results) >= k:
             break
