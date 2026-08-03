@@ -1,0 +1,44 @@
+{
+  "_source": "bench/bench_real_embeddings.py, GitHub Actions run 30604429019, ubuntu-24.04-arm (Cobalt 100, Neoverse N2), single core",
+  "_note": "Committed so the headline table can be read without re-running CI. Raw console output alongside in real-embeddings.txt.",
+  "dataset": {
+    "corpus": "20 newsgroups, chunked",
+    "model": "sentence-transformers/all-MiniLM-L6-v2",
+    "database": 60000,
+    "dim": 384,
+    "queries": 200,
+    "k": 10,
+    "anisotropy_real": 4.7,
+    "anisotropy_gaussian": 1.3,
+    "anisotropy_note": "higher is more skewed, which is harder for uniform quantization; real embeddings are much harder than the Gaussian data a synthetic benchmark would use"
+  },
+  "results": [
+    {"index": "FAISS IndexFlatIP (float32)",   "qps": 263.3,    "recall_at_10": 1.000, "note": "exact"},
+    {"index": "FAISS QT_8bit",                 "qps": 87.1,     "recall_at_10": 0.987},
+    {"index": "FAISS QT_8bit_uniform",         "qps": 90.4,     "recall_at_10": 0.980},
+    {"index": "FAISS QT_8bit_direct_signed",   "qps": 231.2,    "recall_at_10": 0.978, "note": "fastest working FAISS int8, the baseline we quote"},
+    {"index": "FAISS IndexPQFastScan m=192",   "qps": 2050.9,   "recall_at_10": 0.787},
+    {"index": "FAISS IndexPQFastScan m=96",    "qps": 3835.6,   "recall_at_10": 0.617},
+    {"index": "FAISS IndexPQFastScan m=48",    "qps": 7025.4,   "recall_at_10": 0.429},
+    {"index": "FAISS IVFPQFastScan 256/32",    "qps": 15245.5,  "recall_at_10": 0.605},
+    {"index": "FAISS IVFPQFastScan 256/128",   "qps": 5409.1,   "recall_at_10": 0.615},
+    {"index": "sq8 [scalar]",                  "qps": 143.8,    "recall_at_10": 0.981, "note": "no SIMD, separate translation unit, CI asserts zero SIMD instructions"},
+    {"index": "sq8 [neon]",                    "qps": 750.6,    "recall_at_10": 0.981},
+    {"index": "sq8 [sdot]",                    "qps": 1627.6,   "recall_at_10": 0.981},
+    {"index": "sq8 [smmla]",                   "qps": 2106.2,   "recall_at_10": 0.981}
+  ],
+  "headline": {
+    "vs_fastest_faiss_int8": 9.1,
+    "recall_delta_points": 0.3,
+    "vs_exact_float32": 8.0,
+    "recall_cost_points": -1.9
+  },
+  "instruction_stack": {
+    "scalar_to_neon": 5.22,
+    "neon_to_sdot": 2.17,
+    "sdot_to_smmla": 1.29,
+    "total": 14.6,
+    "note": "the design change alone lands at 143.8 QPS, below the 231.2 of the FAISS index it replaces; symmetric quantization buys eligibility, not speed"
+  },
+  "pq_concession": "PQ fast-scan is faster in absolute terms at every setting. It cannot enter the 0.97 to 0.99 recall band on this data, topping out at 0.787. If lower recall is acceptable, PQ is the right tool and this is not it."
+}

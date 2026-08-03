@@ -1,0 +1,46 @@
+faiss 1.14.3  compile options: OPTIMIZE DD ARM_NEON ARM_SVE 
+sq8 auto-selected kernel: smmla
+
+============================================================================
+dim=128  database=200,000  queries=256  k=10  single threaded
+============================================================================
+
+  index                                     QPS   recall@10   vs FAISS SQ8
+  --------------------------------------------------------------------------
+  FAISS IndexFlatIP (float32)             273.6       1.000           3.7x
+  FAISS IndexScalarQuantizer               74.8       0.978           1.0x
+  sq8 [scalar]                            119.9       0.980           1.6x
+  sq8 [neon]                              565.2       0.980           7.6x
+  sq8 [sdot]                              918.4       0.980          12.3x
+  sq8 [smmla]                           1,463.5       0.980          19.6x
+
+  Dot products per second (n x nq / time), comparable to the
+  standalone kernel microbenchmark:
+    FAISS IndexFlatIP (float32)              54.7 Mdot/s
+    FAISS IndexScalarQuantizer               15.0 Mdot/s
+    sq8 [scalar]                             24.0 Mdot/s
+    sq8 [neon]                              113.0 Mdot/s
+    sq8 [sdot]                              183.7 Mdot/s
+    sq8 [smmla]                             292.7 Mdot/s
+
+============================================================================
+dim=768  database=50,000  queries=128  k=10  single threaded
+============================================================================
+
+  index                                     QPS   recall@10   vs FAISS SQ8
+  --------------------------------------------------------------------------
+  FAISS IndexFlatIP (float32)             143.5       1.000           2.7x
+  FAISS IndexScalarQuantizer               53.0       0.983           1.0x
+  sq8 [scalar]                             85.3       0.978           1.6x
+  sq8 [neon]                              528.0       0.978          10.0x
+  sq8 [sdot]                            1,086.3       0.978          20.5x
+  sq8 [smmla]                           1,352.8       0.978          25.5x
+
+  Dot products per second (n x nq / time), comparable to the
+  standalone kernel microbenchmark:
+    FAISS IndexFlatIP (float32)               7.2 Mdot/s
+    FAISS IndexScalarQuantizer                2.6 Mdot/s
+    sq8 [scalar]                              4.3 Mdot/s
+    sq8 [neon]                               26.4 Mdot/s
+    sq8 [sdot]                               54.3 Mdot/s
+    sq8 [smmla]                              67.6 Mdot/s

@@ -1,0 +1,50 @@
+==============================================================================
+REAL EMBEDDINGS
+==============================================================================
+  fetching 20 newsgroups
+  loading sentence-transformers/all-MiniLM-L6-v2
+  embedding 60,200 chunks
+  embedded in 1283s -> (60200, 384)
+
+  database 60,000 x 384   queries 200   k=10
+  anisotropy: real 4.7  vs  gaussian 1.3
+  (higher means more skewed, which is harder for uniform quantization)
+
+  --- matched recall band 0.97 to 0.99 ---
+    sq8 [smmla]                               2,106.2 QPS  recall 0.981
+    sq8 [sdot]                                1,627.6 QPS  recall 0.981
+    sq8 [neon]                                  750.6 QPS  recall 0.981
+    FAISS QT_8bit_direct_signed                 231.2 QPS  recall 0.978
+    sq8 [scalar]                                143.8 QPS  recall 0.981
+    FAISS QT_8bit_uniform                        90.4 QPS  recall 0.980
+    FAISS QT_8bit                                87.1 QPS  recall 0.987
+
+    >> sq8 is fastest at matched recall.
+
+  index                                     QPS   recall@10   vs best int8
+  ---------------------------------------------------------------------------
+  FAISS IndexFlatIP (float32)             263.3       1.000           1.1x  <- exact float32
+  FAISS QT_8bit                            87.1       0.987           0.4x
+  FAISS QT_8bit_uniform                    90.4       0.980           0.4x
+  FAISS QT_8bit_direct_signed             231.2       0.978           1.0x  <- fastest working FAISS int8
+  FAISS IndexPQFastScan m=192           2,050.9       0.787           8.9x
+  FAISS IndexPQFastScan m=96            3,835.6       0.617          16.6x
+  FAISS IndexPQFastScan m=48            7,025.4       0.429          30.4x
+  FAISS IVFPQFastScan 256/32           15,245.5       0.605          65.9x
+  FAISS IVFPQFastScan 256/128           5,409.1       0.615          23.4x
+  sq8 [scalar]                            143.8       0.981           0.6x
+  sq8 [neon]                              750.6       0.981           3.2x
+  sq8 [sdot]                            1,627.6       0.981           7.0x
+  sq8 [smmla]                           2,106.2       0.981           9.1x
+
+  best sq8 : sq8 [smmla] 2,106.2 QPS @ recall 0.981
+
+  vs fastest FAISS int8 (FAISS QT_8bit_direct_signed):
+    9.1x faster, recall +0.3 percentage points (better)
+
+  vs exact float32 search:
+    8.0x faster, recall -1.9 percentage points (this is the accuracy cost)
+
+  >> Note: every FAISS int8 mode here is SLOWER than FAISS's
+     own exact float32 search (231.2 vs 263.3 QPS). On Arm, quantizing costs speed and
+     buys only memory.
