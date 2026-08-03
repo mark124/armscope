@@ -35,7 +35,11 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from bench_vs_faiss import KERNELS, lib  # noqa: E402
 
 D = 384
-SIZES = [500_000, 1_000_000, 2_000_000, 4_000_000, 6_000_000]
+# Six million does not fit. Building an index needs the source codes and the
+# index copy alive at once, so a 4GB device tops out near four million
+# passages whichever engine you use. That ceiling is a real constraint on this
+# hardware and is part of the answer, not a limitation of the benchmark.
+SIZES = [500_000, 1_000_000, 2_000_000, 4_000_000]
 REPEATS = 5
 # Below this a search feels immediate; above it a person notices waiting.
 INTERACTIVE_MS = 250.0
