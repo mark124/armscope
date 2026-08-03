@@ -166,11 +166,6 @@ fetch('/api/manifest').then(r => r.json()).then(m => {
   $('kernel').textContent = m.kernel;
 });
 
-// Anything above this scored like a real answer; anything below scored like
-// nonsense. Measured, not guessed: across seven ordinary questions the top
-// hit scored 0.613 to 0.747, and across six strings of invented words it
-// scored 0.416 to 0.497. The gap is wide and 0.55 sits in the middle of it.
-const WEAK = 0.55;
 
 function say(text, bad) {
   const m = $('msg');
@@ -212,8 +207,12 @@ function render(d) {
     v.textContent = '';
     const lead = document.createElement('b');
     lead.textContent = `${d.speedup}x faster`;
+    // Agreement over the results actually on screen. The deeper figure, over
+    // the widened fetch, is friendlier and is in the API as
+    // same_results_at_depth, but this sentence points at what you can see.
     const same = d.same_results === null ? '' :
-      ` Both returned ${Math.round(d.same_results * 100)}% the same passages.`;
+      ` Both returned ${Math.round(d.same_results * 100)}% the same passages` +
+      ` in the ${d.results.length} shown.`;
     v.append(lead, document.createTextNode(
       ` on this query, same machine, same moment.${same}` +
       ` Embedding the query took ${d.timing_ms.embed.toFixed(1)} ms` +
@@ -253,13 +252,14 @@ function render(d) {
   // its tenth is 0.507, so dimming each row against this bar greyed out nine
   // of ten perfectly good answers. The bar says whether the query found
   // anything; the printed score lets a reader rank what it found.
-  const best = d.results.length ? d.results[0].score : 0;
-  const nothingMatched = best < WEAK;
+  // The server decides this now, because the threshold is per source and the
+  // calibration belongs next to the data it was measured from. A flat bar
+  // caught invented words and missed the failure this corpus actually makes,
+  // which is Gutenberg narrative answering a history question at 0.64.
+  const nothingMatched = d.low_confidence;
   if (nothingMatched) {
-    say({body: `Nothing scored above ${WEAK}. The closest passages are shown` +
-                ` anyway, best ${best.toFixed(2)}, but treat them as noise:` +
-                ` an exhaustive search always returns its ten nearest` +
-                ` neighbours even when nothing is near.`}, true);
+    say({body: `Weak match: ${d.confidence_note}. The closest passages are` +
+                ` shown anyway, so read them sceptically.`}, true);
   }
 
   for (const r of d.results) {

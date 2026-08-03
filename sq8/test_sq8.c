@@ -6,7 +6,13 @@
  * refuse to publish numbers unless this passes.
  *
  * build:
- *   gcc -O2 -march=armv8.2-a+dotprod+i8mm -o test_sq8 test_sq8.c sq8.c -lm
+ *   bash build.sh test
+ *
+ * Not a single gcc line any more. The scalar reference lives in its own
+ * translation unit compiled with vectorisation off, because at -O3 with
+ * +dotprod the compiler turns the obvious loop into SDOT and the baseline
+ * stops being one, so linking it needs two compiler invocations with
+ * different flags. build.sh is the only place that knows them.
  */
 
 #include "sq8.h"
@@ -67,9 +73,53 @@ static void test_kernels_agree(void) {
         sq8_force_kernel((sq8_kernel_t)-1);
 
         char msg[96];
-        snprintf(msg, sizeof(msg), "d=%-5d all kernels == scalar (%d)", d, ref);
+        snprintf(msg, sizeof(msg), "d=%-5d scalar/neon/sdot == scalar (%d)",
+                 d, ref);
         check(all_match, msg);
         free(a); free(b);
+    }
+
+    /* SMMLA is NOT covered by the loop above and used to be claimed as if it
+     * were. sq8_dot takes one vector against one vector, and the resolver
+     * maps both the SDOT and the SMMLA settings to the same one-wide SDOT
+     * kernel, because a 2x2 tile has nothing to do with a single dot product.
+     * So that loop runs scalar, NEON, SDOT, and SDOT again.
+     *
+     * The tile is only reachable through a search with at least two queries,
+     * so reach it that way: same dimensions, scores compared bit for bit
+     * against the scalar kernel. Identical integer dot products through
+     * identical float scaling give identical floats, so anything other than
+     * exact equality is a real disagreement. */
+    printf("\nsmmla 2x2 tile agrees with scalar, at every dimension\n");
+    for (size_t di = 0; di < sizeof(dims) / sizeof(dims[0]); di++) {
+        const int d = dims[di], k = 3;
+        const int64_t n = 7, nq = 4;      /* odd n and even nq hit both tails */
+        float *base = make_vectors(n, d, 400 + d);
+        float *qry = make_vectors(nq, d, 900 + d);
+
+        int64_t ids[2][4 * 3];
+        float sc[2][4 * 3];
+        for (int pass = 0; pass < 2; pass++) {
+            sq8_force_kernel(pass ? SQ8_KERNEL_SMMLA : SQ8_KERNEL_SCALAR);
+            sq8_index_t *idx = sq8_build(base, n, d);
+            int8_t *qc = malloc((size_t)nq * idx->dpad);
+            float *qs = malloc((size_t)nq * sizeof(float));
+            sq8_quantize_queries(qry, nq, d, qc, qs);
+            sq8_search_ip(idx, qc, qs, nq, k, ids[pass], sc[pass]);
+            free(qc); free(qs);
+            sq8_free(idx);
+        }
+        sq8_force_kernel((sq8_kernel_t)-1);
+
+        int same = 1;
+        for (int i = 0; i < nq * k; i++)
+            if (ids[0][i] != ids[1][i] || sc[0][i] != sc[1][i]) same = 0;
+
+        char msg[96];
+        snprintf(msg, sizeof(msg),
+                 "d=%-5d smmla tile == scalar, ids and scores", d);
+        check(same, msg);
+        free(base); free(qry);
     }
 }
 

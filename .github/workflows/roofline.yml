@@ -2,7 +2,13 @@ name: roofline
 
 # Does blocking queries convert i8mm's small win into a real one?
 #
-# Our published number is that i8mm was worth 1.31x over SDOT, which is a poor
+# Held at a matched block factor i8mm is worth 1.00x over SDOT on a flat scan
+# and 1.29x at sixteen queries per pass. An earlier figure of 1.31x compared
+# SMMLA at its 2x2 tiling against SDOT with none, so it priced the loop order
+# and the instruction together, and is withdrawn. What follows is the sweep
+# that established that, plus the roofline it was predicted from. The
+# prediction was wrong: the scan sits at 54% of the measured bandwidth roof,
+# not the 95% we expected, which is a poor
 # return on a dedicated matrix instruction. The stated reason is that a flat
 # int8 scan does one multiply-accumulate per byte read, so it is pinned against
 # memory bandwidth and SMMLA spends its time waiting. This tests that reading

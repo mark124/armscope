@@ -205,6 +205,45 @@ app = FastAPI()
 MAX_K = 100
 MAX_Q = 512
 
+# When to admit the answer is probably wrong, per source.
+#
+# A single floor catches noise and misses the failure this corpus actually
+# produces. Invented words top out at 0.42 to 0.50, so 0.55 flags them. But
+# the confident-but-wrong cases score far higher and are almost all Project
+# Gutenberg: "what caused the fall of Rome" returns Victorian narrative at
+# 0.629, sourdough returns a prairie romance at 0.644, the Battle of Hastings
+# returns a literary survey at 0.646.
+#
+# Gutenberg is book-length narrative prose. It reads as vaguely relevant to
+# almost any question, so it clears a noise floor while being useless. Across
+# the queries that work, Gutenberg never takes the top slot at all and peaks
+# at 0.70 further down, while a good top hit from the other sources runs 0.72
+# to 0.80. A Gutenberg passage in first place below 0.70 is therefore the
+# signature of the failure rather than of an answer.
+FLOOR = {"gutenberg": 0.70}
+FLOOR_DEFAULT = 0.55
+
+
+def confidence(results: list[dict]) -> dict:
+    """Should the caller be told the top answer is probably not an answer?"""
+    if not results:
+        return {"low_confidence": True, "floor": FLOOR_DEFAULT,
+                "confidence_note": "nothing was returned"}
+    top = results[0]
+    floor = FLOOR.get(top.get("source", ""), FLOOR_DEFAULT)
+    if top["score"] >= floor:
+        return {"low_confidence": False, "floor": floor}
+    if floor != FLOOR_DEFAULT:
+        note = (f"the best match is {top['source']} prose at "
+                f"{top['score']:.2f}, under the {floor} this source needs to "
+                f"be worth reading: long-form narrative scores moderately "
+                f"against almost any question")
+    else:
+        note = (f"nothing scored above {floor}, best {top['score']:.2f}; an "
+                f"exhaustive search returns its nearest neighbours even when "
+                f"nothing is near")
+    return {"low_confidence": True, "floor": floor, "confidence_note": note}
+
 
 @app.get("/api/search")
 def api_search(q: str, k: int = 10):
@@ -259,13 +298,25 @@ def api_search(q: str, k: int = 10):
         # Shown in the UI: without it a reader cannot tell a strong hit from
         # the best of a bad lot, and every query returns ten of something.
         row["score"] = round(by_id.get(i, 0.0), 4)
+        row["id"] = i
         results.append(row)
         if len(results) >= k:
             break
 
-    overlap = None
+    # Agreement over what is on screen, not over the widened fetch. Computing
+    # it at depth 60 and captioning it "the same passages" described the ten
+    # results a reader was looking at using a number measured over sixty, and
+    # deeper overlap is systematically friendlier. Both figures are returned:
+    # the shallow one is what the sentence means, the deep one is the better
+    # measure of whether the two backends agree, and they are different
+    # questions.
+    overlap = overlap_deep = None
     if f_ids is not None:
-        overlap = len(set(ids.tolist()) & set(f_ids.tolist())) / max(len(ids), 1)
+        deep_a, deep_b = set(ids.tolist()), set(f_ids.tolist())
+        overlap_deep = len(deep_a & deep_b) / max(len(ids), 1)
+        shown = [int(r["id"]) for r in results]
+        top_f = [int(i) for i in f_ids.tolist()[:len(shown)]]
+        overlap = (len(set(shown) & set(top_f)) / len(shown)) if shown else None
 
     return {
         "query": q,
@@ -275,6 +326,9 @@ def api_search(q: str, k: int = 10):
                       "faiss": round(faiss_ms, 2) if faiss_ms else None},
         "speedup": round(faiss_ms / sq8_ms, 2) if faiss_ms and sq8_ms else None,
         "same_results": overlap,
+        "same_results_at_depth": overlap_deep,
+        "fetch_depth": over,
+        **confidence(results),
         "kernel": KERNEL,
         "n": MANIFEST["n"],
     }

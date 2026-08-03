@@ -486,7 +486,19 @@ sq8_kernel_t sq8_search_ip(const sq8_index_t *idx,
 
         cand_t *h = malloc((size_t)nqb * k * sizeof(cand_t));
         int *cnt = calloc((size_t)nqb, sizeof(int));
-        if (!h || !cnt) { free(h); free(cnt); continue; }
+        if (!h || !cnt) {
+            /* Skipping the block used to leave its output slots untouched,
+             * so the caller read whatever was already in the buffer and had
+             * no way to know. A rare branch that returns wrong answers is
+             * worse than one that returns none: mark the block empty. */
+            for (int j = 0; j < nqb; j++)
+                for (int r = 0; r < k; r++) {
+                    out_ids[(q0 + j) * k + r] = -1;
+                    out_scores[(q0 + j) * k + r] = -INFINITY;
+                }
+            free(h); free(cnt);
+            continue;
+        }
 
 #if defined(__aarch64__) && defined(__ARM_FEATURE_MATMUL_INT8)
         if (kern == SQ8_KERNEL_SMMLA && nqb >= 2)

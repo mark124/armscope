@@ -106,17 +106,32 @@ void sq8_set_num_threads(int t);
 /* How many queries share one pass over the database.
  *
  * A flat int8 scan reads the entire index per query and does one multiply-
- * accumulate per byte read, so it is bandwidth-bound long before it is
- * compute-bound: measured on Neoverse N2 at 22.9 GB/s per core, about 95% of
- * what the memory system can stream, against roughly half the core's int8
- * throughput. That is the reason i8mm was only worth 1.31x. SMMLA was idling
- * on memory, not falling short as an instruction.
+ * accumulate per byte read. We predicted that made it bandwidth-bound, at
+ * about 95% of what the memory system can stream, and that this was why i8mm
+ * bought so little.
+ *
+ * That prediction was wrong, and measuring it is what showed the fix was
+ * worth building anyway. Both ceilings measured on the same Neoverse N2 core
+ * in the same run (bench/blocked.py): streaming bandwidth 35.5 GB/s, and the
+ * scan sits at 54% of it, not 95%. At 1.00 MAC per byte against a ridge point
+ * of 1.05 for SDOT and 1.31 for SMMLA, the flat scan is balanced at the knee
+ * rather than pinned against the wall.
  *
  * Blocking B queries together makes each database vector, once loaded, serve
  * B dot products instead of one, so arithmetic intensity scales with B while
- * bytes read stay fixed. 0 selects the default. Set explicitly to sweep it,
- * or to hold it constant while comparing SDOT against SMMLA, which is the
- * only way to attribute a speedup to the instruction rather than the tiling.
+ * bytes read stay fixed. Measured at four million vectors: 2.02x for SDOT,
+ * 2.54x for SMMLA.
+ *
+ * What that reveals about i8mm is sharper than the number it replaces. Held
+ * at a matched block factor, SMMLA over SDOT is 1.00x at B=1 and 1.29x at
+ * B=16: the instruction is worth nothing on a flat scan and pays only once
+ * the loop gives it enough work per byte. An earlier figure of 1.31x compared
+ * SMMLA at its 2x2 tiling against SDOT with none, pricing the loop order and
+ * the instruction together; it is withdrawn.
+ *
+ * 0 selects the default. Set explicitly to sweep it, or to hold it constant
+ * while comparing SDOT against SMMLA, which is the only way to attribute a
+ * speedup to the instruction rather than the tiling.
  */
 void sq8_set_query_block(int qb);
 int sq8_query_block(void);

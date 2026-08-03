@@ -23,6 +23,14 @@ jobs:
           python3 tools/cpuid.py
           gcc --version | head -1
 
+      # Runs here as well as in roofline.yml. Every number this workflow
+      # publishes is quoted against the scalar row, so the proof that the
+      # scalar row contains no SIMD belongs in the same file as the claim,
+      # where a reader checking it will actually look.
+      - name: The scalar baseline contains no SIMD
+        working-directory: sq8
+        run: bash build.sh verify
+
       - name: Build
         working-directory: sq8
         run: |
