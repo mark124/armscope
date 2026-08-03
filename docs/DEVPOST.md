@@ -71,6 +71,15 @@ Project Gutenberg on a single Arm box with no GPU, which runs **both** indexes
 on every query and races them on screen. The speedup is measured in front of
 you rather than quoted.
 
+The ratio is not an artifact of an idle machine. Saturating the two-core box,
+both paths degrade proportionally and the advantage holds:
+
+| queries in flight | 1 | 2 | 4 | 8 |
+| --- | --- | --- | --- | --- |
+| FAISS int8 | 185.5 ms | 190.9 ms | 378.3 ms | 760.0 ms |
+| sq8 | 51.4 ms | 59.0 ms | 107.0 ms | 221.1 ms |
+| ratio | 3.61x | 3.23x | 3.54x | 3.44x |
+
 ## How we built it
 
 Three layers, each one a check on the one below.

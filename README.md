@@ -41,6 +41,22 @@ were added to accelerate.
 - **8.0x faster than FAISS's exact float32 search**, giving up 1.9 points of
   recall. Different claim, stated separately rather than blended in.
 
+### The ratio survives contention
+
+A single-query number is a latency claim on an idle machine. The demo box has
+two cores, so here is what happens when it is saturated, median of three
+queries per level:
+
+| queries in flight | 1 | 2 | 4 | 8 |
+| --- | --- | --- | --- | --- |
+| FAISS int8 | 185.5 ms | 190.9 ms | 378.3 ms | 760.0 ms |
+| sq8 | 51.4 ms | 59.0 ms | 107.0 ms | 221.1 ms |
+| **ratio** | **3.61x** | **3.23x** | **3.54x** | **3.44x** |
+
+Both degrade proportionally past the core count, as they must, and the ratio
+holds between 3.2x and 3.6x throughout. The advantage is a property of the
+kernel, not an artifact of measuring one query on an idle box.
+
 ### Why the live demo says 3.6x and this page says 9.1x
 
 Both are true and they are not the same measurement, so here is the

@@ -229,8 +229,14 @@ function render(d) {
   // An exhaustive scan always returns the k nearest things, whether or not
   // any of them are close. Without saying so, ten confident-looking rows come
   // back for a query that matched nothing at all.
+  // Judged on the best hit, not per row. A good query's tail routinely sits
+  // in the low 0.5s: "what causes the northern lights" tops out at 0.659 and
+  // its tenth is 0.507, so dimming each row against this bar greyed out nine
+  // of ten perfectly good answers. The bar says whether the query found
+  // anything; the printed score lets a reader rank what it found.
   const best = d.results.length ? d.results[0].score : 0;
-  if (best < WEAK) {
+  const nothingMatched = best < WEAK;
+  if (nothingMatched) {
     say({body: `Nothing scored above ${WEAK}. The closest passages are shown` +
                 ` anyway, best ${best.toFixed(2)}, but treat them as noise:` +
                 ` an exhaustive search always returns its ten nearest` +
@@ -239,7 +245,7 @@ function render(d) {
 
   for (const r of d.results) {
     const row = document.createElement('div');
-    row.className = 'r' + (r.score < WEAK ? ' weak' : '');
+    row.className = 'r' + (nothingMatched ? ' weak' : '');
 
     const head = document.createElement('div');
     head.className = 't';
