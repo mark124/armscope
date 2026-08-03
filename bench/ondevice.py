@@ -35,7 +35,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from bench_vs_faiss import KERNELS, lib  # noqa: E402
 
 D = 384
-SIZES = [250_000, 500_000, 1_000_000, 2_000_000]
+SIZES = [500_000, 1_000_000, 2_000_000, 4_000_000, 6_000_000]
 REPEATS = 5
 # Below this a search feels immediate; above it a person notices waiting.
 INTERACTIVE_MS = 250.0
@@ -110,6 +110,11 @@ def main() -> None:
                               sc.ctypes.data_as(ctypes.POINTER(ctypes.c_float)))
 
         sq8_ms = median_ms(run_sq8)
+        # Free before building the other index. A 4GB device cannot hold both
+        # at six million vectors, and more to the point it would never be
+        # asked to: whichever one you deploy gets the machine to itself.
+        lib.sq8_free(ptr)
+        ptr = None
 
         # FAISS gets the same data in the form its fastest int8 mode can use.
         f = faiss.IndexScalarQuantizer(
@@ -137,7 +142,6 @@ def main() -> None:
                             "sq8_interactive": ok_sq8,
                             "faiss_interactive": ok_faiss})
         del f, grid, codes
-        lib.sq8_free(ptr)
 
     out["interactive_threshold_ms"] = INTERACTIVE_MS
     out["peak_rss_gb"] = round(rss_gb(), 2)
