@@ -35,11 +35,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from bench_vs_faiss import KERNELS, lib  # noqa: E402
 
 D = 384
-# Six million does not fit. Building an index needs the source codes and the
-# index copy alive at once, so a 4GB device tops out near four million
-# passages whichever engine you use. That ceiling is a real constraint on this
-# hardware and is part of the answer, not a limitation of the benchmark.
-SIZES = [500_000, 1_000_000, 2_000_000, 4_000_000]
+SIZES = [500_000, 1_000_000, 2_000_000, 4_000_000, 6_000_000]
 REPEATS = 5
 # Below this a search feels immediate; above it a person notices waiting.
 INTERACTIVE_MS = 250.0
@@ -88,12 +84,20 @@ def main() -> None:
 
     print(f"{'passages':>10s} {'index MB':>9s} {'FAISS ms':>9s} {'sq8 ms':>8s} "
           f"{'gain':>6s}  verdict")
+    STEP = 100_000
     for n in SIZES:
+        # sq8_from_codes copies, so the source array and the index are both
+        # resident for a moment. At four million that alone is 3.1GB and the
+        # process was killed. Drop the source as soon as the index owns its
+        # copy, and build FAISS from freshly generated chunks rather than
+        # keeping an array alive across both phases. Contents do not affect a
+        # timing that scans everything regardless.
         codes = rng.integers(-127, 128, size=n * dpad, dtype=np.int8)
         scales = np.full(n, 1.0 / 127.0, dtype=np.float32)
         ptr = lib.sq8_from_codes(
             codes.ctypes.data_as(ctypes.POINTER(ctypes.c_int8)),
             scales.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), n, D)
+        del codes
 
         xq = rng.standard_normal((1, D)).astype(np.float32)
         qc = np.zeros(dpad, dtype=np.int8)
@@ -124,11 +128,16 @@ def main() -> None:
         f = faiss.IndexScalarQuantizer(
             D, faiss.ScalarQuantizer.QT_8bit_direct_signed,
             faiss.METRIC_INNER_PRODUCT)
-        grid = codes.reshape(n, dpad)
-        step = 100_000
-        f.train(np.ascontiguousarray(grid[:step, :D], dtype=np.float32))
-        for i in range(0, n, step):
-            f.add(np.ascontiguousarray(grid[i:i + step, :D], dtype=np.float32))
+
+        def chunk(rows):
+            return rng.integers(-127, 128, size=(rows, D)).astype(np.float32)
+
+        f.train(chunk(min(STEP, n)))
+        left = n
+        while left > 0:
+            take = min(STEP, left)
+            f.add(chunk(take))
+            left -= take
         fq = np.rint(xq / (np.abs(xq).max() or 1.0) * 127).astype(np.float32)
         faiss_ms = median_ms(lambda: f.search(fq, 10))
 
@@ -145,7 +154,7 @@ def main() -> None:
                             "gain": round(faiss_ms / sq8_ms, 2),
                             "sq8_interactive": ok_sq8,
                             "faiss_interactive": ok_faiss})
-        del f, grid, codes
+        del f
 
     out["interactive_threshold_ms"] = INTERACTIVE_MS
     out["peak_rss_gb"] = round(rss_gb(), 2)
