@@ -76,13 +76,13 @@ both paths degrade proportionally and the advantage holds at **roughly 3x**:
 
 | queries in flight | 1 | 2 | 4 | 8 |
 | --- | --- | --- | --- | --- |
-| FAISS int8 | 184.1 ms | 189.5 ms | 368.6 ms | 749.9 ms |
-| sq8 | 51.5 ms | 61.8 ms | 115.4 ms | 212.0 ms |
-| ratio | 3.57x | 3.06x | 3.19x | 3.54x |
+| FAISS int8 | 185.4 ms | 189.2 ms | 328.3 ms | 690.0 ms |
+| sq8 | 51.3 ms | 60.9 ms | 110.7 ms | 202.1 ms |
+| ratio | 3.61x | 3.11x | 2.96x | 3.41x |
 
 Measured over the internet against the live site with `bench/concurrency.py`,
-median of three rounds. Across both careful and burst load the range is 3.06x
-to 3.61x, which is why the claim is "roughly 3x" rather than a tighter band.
+median of three rounds. Across both careful and burst load the range is 2.96x
+to 3.62x, which is why the claim is "roughly 3x" rather than a tighter band.
 
 ## How we built it
 

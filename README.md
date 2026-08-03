@@ -72,12 +72,12 @@ site rather than on the box:
 
 | queries in flight | 1 | 2 | 4 | 8 |
 | --- | --- | --- | --- | --- |
-| FAISS int8 | 184.1 ms | 189.5 ms | 368.6 ms | 749.9 ms |
-| sq8 | 51.5 ms | 61.8 ms | 115.4 ms | 212.0 ms |
-| **ratio** | **3.57x** | **3.06x** | **3.19x** | **3.54x** |
+| FAISS int8 | 185.4 ms | 189.2 ms | 328.3 ms | 690.0 ms |
+| sq8 | 51.3 ms | 60.9 ms | 110.7 ms | 202.1 ms |
+| **ratio** | **3.61x** | **3.11x** | **2.96x** | **3.41x** |
 
-Firing everything at once with no warm-up gives 3.61x, 3.17x, 3.33x, 3.55x.
-Across both load shapes and every level the range is **3.06x to 3.61x**, so
+Firing everything at once with no warm-up gives 3.62x, 3.50x, 3.31x, 3.45x.
+Across both load shapes and every level the range is **2.96x to 3.62x**, so
 the honest claim is **roughly 3x under contention**, not a tighter band.
 
 Both degrade proportionally past the core count, as they must. The advantage
@@ -85,13 +85,24 @@ is a property of the kernel rather than of measuring one query on an idle box,
 which is the whole point of the table, and that argument needs the ratio to
 survive saturation rather than to hit a particular figure.
 
-> An earlier version of this table quoted a 3.2x to 3.6x band and slightly
-> faster sq8 times. Those were measured on the box in a single run, which
-> removed the network and flattered the shorter side of the comparison. The
-> numbers above come from the committed script over the internet, and three of
-> the four points sit below the band that was published. Note also that a
-> client opening a fresh TLS connection per request will read lower still: the
-> handshakes compete for the same two cores as the search.
+> This table has been corrected twice, and the second time is the more
+> useful lesson. It first quoted a 3.2x to 3.6x band measured on the box in a
+> single run, which removed the network and flattered the shorter side. It was
+> then re-measured over the internet with the committed script.
+>
+> Between that and now, a *correctness* fix moved it again. Reporting result
+> agreement over the ten results shown rather than the sixty fetched meant
+> collapsing both lists, which doubled the per-request metadata reads. That
+> work sits outside both timers, so no reported latency changed, but on two
+> cores it contends with the searches and steals proportionally more from a
+> 51ms scan than from a 185ms one. A per-request memo recovered most of it.
+> The floor still moved from 3.06x to 2.96x, and the number above is the one
+> after the fix.
+>
+> Two things worth taking from that. Untimed work is still work, and a
+> benchmark that is not re-run after a change is a claim about the past. Also
+> note that a client opening a fresh TLS connection per request reads lower
+> again, because the handshakes compete for the same two cores as the search.
 
 ### Why the live demo says 3.6x and this page says 9.1x
 
