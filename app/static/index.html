@@ -55,6 +55,14 @@
   footer { margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--line);
            color: var(--dim); font-size: 13px; }
   footer a { color: var(--dim); }
+  /* Below about 360px the button no longer fits beside the input and pushed
+     22px past the edge, which on a phone is a page that scrolls sideways. */
+  @media (max-width: 380px) {
+    form { flex-wrap: wrap; }
+    input { min-width: 0; }
+    button { width: 100%; }
+    .lane { grid-template-columns: 96px 1fr 72px; gap: 8px; }
+  }
   .ex { color: var(--dim); font-size: 13px; margin-bottom: 18px; }
   .ex a { color: var(--accent); cursor: pointer; text-decoration: none;
           margin-right: 12px; }
