@@ -110,9 +110,16 @@ site rather than on the box:
 | sq8 | 51.3 ms | 60.9 ms | 110.7 ms | 202.1 ms |
 | **ratio** | **3.61x** | **3.11x** | **2.96x** | **3.41x** |
 
-Firing everything at once with no warm-up gives 3.62x, 3.50x, 3.31x, 3.45x.
-Across both load shapes and every level the range is **2.96x to 3.62x**, so
-the honest claim is **roughly 3x under contention**, not a tighter band.
+That is one run. **Repeat it and the four-in-flight figure moves more than any
+single run suggests.** Four independent invocations of the same script, one of
+them by an outside reviewer on their own connection, put it at 3.19, 2.96,
+3.17 and 2.24. The spread is the shared-tenant instance and the internet path
+between, not the kernel.
+
+So the claim is **roughly 3x under contention**, and it is worded that way
+because it has to survive a spread of about 2.2x to 3.6x, not because 3x is
+where any particular run landed. If you run the script and get 2.4x, that is
+within what we have seen; if you get 4x, we have not seen that.
 
 Both degrade proportionally past the core count, as they must. The advantage
 is a property of the kernel rather than of measuring one query on an idle box,
