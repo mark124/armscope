@@ -208,8 +208,17 @@ was how much work the loop gave it per byte fetched.
 
 ## What's next
 
-Upstreaming. The gap in FAISS is a real one, triangulated three ways, and
-OpenSearch's k-NN issue #1138 reports the same 2 to 3.5x Arm latency penalty.
+Upstreaming. The gap in FAISS is a real one, shown two ways: the shipped
+binary contains zero dotprod and zero i8mm at full disassembly coverage, and
+the source contains no occurrence of the intrinsics anywhere.
+
+We used to say "triangulated three ways" and cite OpenSearch k-NN issue #1138
+as the third. Checking that reference before filing anything upstream showed
+it does not say what we said it said: it is an RFC for **fp16** scalar
+quantization, its 2 to 3.5x Arm penalty describes ARM *without* NEON, and
+NEON was added and shipped in k-NN 2.13. It is good prior art that this class
+of gap is real and that closing it works. It is not about int8 and it is not
+open. Demoted in the README rather than quietly dropped.
 
 ## Honest limits
 

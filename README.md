@@ -399,15 +399,24 @@ Every objection below was tested rather than assumed, in
 
 ## The gap this closes
 
-Three independent lines of evidence, all reproducible:
+Two direct lines of evidence, both reproducible, plus one piece of prior art
+that we previously overstated and have demoted.
 
 1. **Binary.** `libfaiss.so` contains 1,818,963 instructions at 100% scan
    coverage: 544 SVE, **zero dotprod, zero i8mm**.
 2. **Source.** The FAISS repository contains no occurrence of `vdotq`,
    `vmmlaq`, or `i8mm` anywhere.
-3. **Independent report.** OpenSearch k-NN issue #1138 documents the absence of
-   Arm scalar-quantizer optimization beyond FP16, with query latency 2 to 3.5x
-   worse on Arm instances.
+
+**Prior art, and a correction.** We used to cite OpenSearch k-NN issue #1138
+as a third independent report of this gap. That was too strong, and we found
+it by going to check the reference rather than by anyone challenging it. The
+issue is an RFC for **fp16** scalar quantization with AVX2 and NEON. Its 2 to
+3.5x Arm penalty is real but describes ARM *without* NEON, and NEON was then
+added and merged, shipping in k-NN 2.13. So it is evidence that a scalar
+quantizer running on Arm without the right SIMD is a real and recognised
+problem, and it is evidence that the fix works. It is not evidence about
+int8, and it is not an open gap. The claim in this repo is specifically about
+dotprod and i8mm on the int8 path, and lines 1 and 2 are what carry it.
 
 ## Reproduce every number
 
