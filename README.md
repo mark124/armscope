@@ -17,6 +17,33 @@ right meant catching four separate ways of fooling ourselves, each of which
 had already produced a published figure that was wrong. Those are documented
 below rather than quietly corrected.
 
+## What it costs: quantizing for memory on Arm is a throughput loss
+
+Scalar quantization is sold as a memory optimisation. On Arm it is also a
+bill. Measured on the m7g.large this demo runs on, one million vectors,
+batched, all cores, at the $0.0816/hour on-demand rate
+([`bench/cost.py`](bench/cost.py), [`results/cost.json`](results/cost.json)):
+
+| index | QPS | $ per million queries | bytes/vector |
+| --- | --- | --- | --- |
+| FAISS `IndexFlatIP` (float32) | 46.2 | $0.49 | 1536 |
+| FAISS `QT_8bit_direct_signed` | 16.3 | **$1.39** | 384 |
+| **sq8** | **247.9** | **$0.09** | 388 |
+
+**Quantizing to int8 to save memory costs 65% of your throughput and nearly
+triples your cost per query.** You save 4x on RAM and pay 2.8x on compute.
+Anyone running a quantized FAISS index on Graviton right now is paying that
+and probably does not know, because the advice to quantize is architecture
+agnostic and this consequence is not.
+
+Two honest qualifications. Part of that gap is BLAS: batched `IndexFlatIP`
+goes through a matrix multiply and the scalar quantizer does not, so
+quantizing also drops you off that path. Unbatched and single-core the same
+two indexes are much closer, 263 against 231 QPS. And sq8's 15x here is a
+batched multi-core figure, not the 9.1x single-core headline elsewhere in
+this README; they are different measurements of the same thing and both are
+stated rather than the larger one being promoted.
+
 ## Why it matters: it moves the limit from the CPU to the memory
 
 Offline semantic search is the thing people want from these devices. It is

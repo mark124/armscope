@@ -1,0 +1,28 @@
+{
+  "rate_usd_hour": 0.0816,
+  "n": 1000000,
+  "d": 384,
+  "rows": [
+    {
+      "index": "FAISS IndexFlatIP (float32)",
+      "qps": 46.2,
+      "usd_per_million": 0.49,
+      "bytes_per_vector": 1536,
+      "vs_float32": 1.0
+    },
+    {
+      "index": "FAISS QT_8bit_direct_signed",
+      "qps": 16.3,
+      "usd_per_million": 1.392,
+      "bytes_per_vector": 384,
+      "vs_float32": 0.35
+    },
+    {
+      "index": "sq8",
+      "qps": 247.9,
+      "usd_per_million": 0.091,
+      "bytes_per_vector": 388,
+      "vs_float32": 5.36
+    }
+  ]
+}

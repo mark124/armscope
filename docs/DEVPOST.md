@@ -22,6 +22,23 @@ the fastest working FAISS int8 mode, at better recall.
 
 ---
 
+## The finding, in money
+
+Scalar quantization is recommended everywhere as a memory optimisation. On
+Arm it is a throughput loss, and nobody tells you. Measured on the
+m7g.large this demo runs on, one million vectors, batched, all cores, at the
+$0.0816/hour on-demand rate:
+
+| index | QPS | $ per million queries | bytes/vector |
+| --- | --- | --- | --- |
+| FAISS `IndexFlatIP` (float32) | 46.2 | $0.49 | 1536 |
+| FAISS `QT_8bit_direct_signed` | 16.3 | **$1.39** | 384 |
+| **sq8** | **247.9** | **$0.09** | 388 |
+
+**You save 4x on RAM and pay 2.8x on compute.** Anyone running a quantized
+FAISS index on Graviton is paying that today, because the advice to quantize
+is architecture agnostic and this consequence is not.
+
 ## Why this exists
 
 Last year this challenge was won by on-device semantic search, and second

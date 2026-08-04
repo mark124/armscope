@@ -117,11 +117,17 @@ def main() -> None:
                     "vs_float32": round(qps / baseline, 2)})
 
     f32, int8, ours = out[0], out[1], out[2]
-    print(f"\nFAISS int8 is {int8['vs_float32']:.2f}x float32: quantizing for "
-          f"memory costs {(1 / int8['vs_float32'] - 1) * 100:.0f}% throughput")
-    print(f"and ${int8['usd_per_million'] - f32['usd_per_million']:.2f} more "
-          f"per million queries than not quantizing at all.")
-    print(f"sq8 is {ours['vs_float32']:.2f}x float32 at "
+    lost = (1 - int8["vs_float32"]) * 100
+    print(f"\nFAISS int8 delivers {int8['vs_float32']:.2f}x the throughput of "
+          f"float32: a {lost:.0f}% loss, and "
+          f"${int8['usd_per_million'] - f32['usd_per_million']:.2f} more per "
+          f"million queries than not quantizing at all.")
+    print("Part of that gap is BLAS: batched IndexFlatIP goes through a matrix")
+    print("multiply, and the scalar quantizer does not, so quantizing also")
+    print("takes you off that path. Single query, unbatched, the same two are")
+    print("much closer (263 against 231 QPS on Neoverse N2).")
+    print(f"sq8 is {ours['vs_float32']:.2f}x float32 and "
+          f"{ours['qps'] / int8['qps']:.1f}x FAISS int8 here, at "
           f"${ours['usd_per_million']:.2f} per million.")
 
     p = pathlib.Path("results/cost.json")
