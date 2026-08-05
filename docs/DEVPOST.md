@@ -273,6 +273,43 @@ Stated here rather than left for a judge to find.
 ## Links
 
 - Repo: https://github.com/mark124/armscope (MIT)
-- Live demo: _(pending, see checklist)_
-- Video: _(pending)_
+- Live demo: https://search.rowset.co
+- Video: _(paste the YouTube URL once the cut is uploaded)_
 - Every benchmark runs in CI on free Arm runners: `.github/workflows/`
+
+## Video, ready to upload
+
+The cut is finished: 2:53, 1920x1080, under the competition's 3:00 cap. See
+[`VIDEO.md`](VIDEO.md) for the shot list and for what was and was not done to
+the live footage.
+
+**Title**
+
+> Quantizing to int8 on Arm costs you money. Here is the measurement.
+
+**Description**
+
+> On Graviton, quantizing a vector index to int8 to save memory costs 65% of
+> your throughput. A million queries goes from 49 cents to $1.39. The reason
+> is structural: FAISS keeps the query in float, so its inner loop never
+> reaches SDOT or SMMLA, and the shipped aarch64 wheel disassembles to 1.9
+> million instructions with exactly zero of either at 100% coverage.
+>
+> Quantizing the query too makes the loop int8 by int8, which is what those
+> instructions exist for. That change alone is slower than the FAISS index it
+> replaces. All of the speed, 14.6x of it, is the Arm instruction stack.
+>
+> Live demo, 3 million passages on two Arm cores with no GPU, racing both
+> indexes on every query: https://search.rowset.co
+> Code, benchmarks and the five numbers we got wrong: https://github.com/mark124/armscope
+>
+> 0:00 Quantizing for memory is a bill
+> 0:30 Why: FAISS never issues an integer dot product
+> 0:58 The fix, in one decision
+> 1:15 Live, 3 million passages on two Arm cores
+> 1:45 Where the speed actually comes from
+> 2:12 What i8mm is really worth
+> 2:34 Five numbers we got wrong
+
+**Visibility:** public or unlisted both satisfy the rules. Public is better,
+since Impact is a scored category.
