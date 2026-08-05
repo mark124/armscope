@@ -17,7 +17,7 @@ We measured what each numeric precision actually costs at every stage of a
 retrieval pipeline on Arm, published the five results that came back negative,
 and built the one thing the map said was missing: a vector search kernel that
 quantizes the query as well as the database, so the inner loop is a pure int8
-dot product that Arm's SDOT and SMMLA can actually run. It is 9.2x faster than
+dot product that Arm's SDOT and SMMLA can actually run. It is 9.1x faster than
 the fastest working FAISS int8 mode, at better recall.
 
 ---
@@ -72,7 +72,7 @@ an instruction the board already has and the stock index cannot reach.
 
 FAISS is the default vector index for most retrieval systems, and its
 `IndexScalarQuantizer` stores vectors as int8 to save memory. On Arm it is
-**slower than not quantizing at all**: 228.3 queries per second against 278.6
+**slower than not quantizing at all**: 231.2 queries per second against 263.3
 for FAISS's own exact float32 search.
 
 That is a strange result, so we looked at the binary rather than guessing.
@@ -189,7 +189,7 @@ instruction.
 **Our first benchmark was against a strawman, and a red team of our own code
 caught it.** The original headline was 23.6x. Testing all four FAISS int8 modes
 found `QT_8bit_direct_signed` is 2.7x faster than the one we had benchmarked.
-The honest figure is 9.2x. We also had never benchmarked FAISS's PQ fast-scan
+The honest figure is 9.1x. We also had never benchmarked FAISS's PQ fast-scan
 path, which has had NEON SIMD since PR #1815, so a claim in our README was
 false as stated. It is now measured at matched recall.
 
@@ -215,7 +215,7 @@ dispatched at runtime.** It is the finding underneath all the others.
 
 **The map is the finding.** Across a retrieval pipeline on Arm, int8 is two
 opposite trades. In the embedding stage it buys 2.24x and costs you 16 to 33%
-of your neighbours. In the retrieval stage it buys 9.2x *and recall goes up*.
+of your neighbours. In the retrieval stage it buys 9.1x *and recall goes up*.
 Retrieval was the only stage where int8 is free, and it was the one nobody had
 implemented.
 
