@@ -11,6 +11,13 @@ FAISS int8 mode, at slightly better recall.**
 | **Live** | [search.rowset.co](https://search.rowset.co) searches 3M passages on two Arm cores and races both indexes on every query. It shows ~3.6x, because a search box sends one query at a time and blocking needs a batch. |
 | **Reproduce** | `cd sq8 && bash build.sh test && ./test_sq8` then `pip install -r app/requirements.txt && python bench/bench_real_embeddings.py`. Every benchmark also runs in CI on free Arm runners. |
 
+[![the live demo racing both indexes on one query](docs/demo.png)](https://search.rowset.co)
+
+*[search.rowset.co](https://search.rowset.co), 3M passages on two Arm cores
+with no GPU. Every query runs on the stock int8 index and on ours, so the
+difference is measured in front of you. There is a [2:53 walkthrough of the
+findings](docs/VIDEO.md) as well.*
+
 **What this repo actually contributes**, since the technique is not new: a
 trustworthy number for a widely repeated but unverified claim. Getting it
 right meant catching four separate ways of fooling ourselves, each of which
@@ -456,22 +463,77 @@ problem, and it is evidence that the fix works. It is not evidence about
 int8, and it is not an open gap. The claim in this repo is specifically about
 dotprod and i8mm on the int8 path, and lines 1 and 2 are what carry it.
 
+## What Arm hardware this targets
+
+| | |
+| --- | --- |
+| **Minimum** | Any Armv8-A aarch64 Linux host. The NEON kernel is baseline, so it runs on every 64-bit Arm CPU including a Raspberry Pi 4. |
+| **For `SDOT`** | Armv8.2 `FEAT_DotProd`. Neoverse N1/N2/V1/V2, Cortex-A76 and later, so Graviton 2 onward and a Raspberry Pi 5. |
+| **For `SMMLA`** | Armv8.6 `FEAT_I8MM`. Neoverse N2/V1/V2, so Graviton 3 onward, Azure Cobalt 100, GH200. **Not** a Raspberry Pi, and not Graviton 2. |
+| **Dispatch** | Chosen at runtime from `HWCAP`, once per search. A binary built with i8mm runs correctly on a CPU without it by falling back, rather than faulting. |
+
+Nothing here needs a GPU, an accelerator, or a vendor SDK.
+
+**Where each number was measured**, since they are not all the same machine:
+
+| measurement | hardware |
+| --- | --- |
+| kernel benchmarks, recall, roofline, i8mm block sweep | **Neoverse N2**, Azure Cobalt 100, GitHub's free `ubuntu-24.04-arm` runner, 4 vCPU |
+| cost per query, live demo | **Neoverse V1**, AWS Graviton3 `m7g.large`, 2 vCPU, 8GB, us-east-2, $0.0816/hour |
+| on-device / Pi-class table | **Neoverse N1**, AWS Graviton2 `t4g.medium`, 2 vCPU, dotprod but no i8mm, the same instruction set as a Pi 5's Cortex-A76 |
+
 ## Reproduce every number
 
-All measurements run on GitHub's Arm-hosted runners (Cobalt 100, Neoverse N2,
-Armv9-A with SVE2, i8mm and dotprod), which are **free on public
-repositories**. No hardware to buy, no cloud account.
+All the kernel measurements run on GitHub's Arm-hosted runners, which are
+**free on public repositories**. No hardware to buy, no cloud account.
 
 Fork this repository, open Actions, run the **sq8** workflow. The benchmark job
 will not run unless the correctness job passes first.
 
-Locally, on any aarch64 Linux host:
+Locally, on any aarch64 Linux host. Dependencies are `gcc` and `make` for the
+kernel, plus `pip install -r app/requirements.txt` for the benchmarks:
 
 ```sh
 cd sq8
 bash build.sh test     # two compiles: the kernels, and the reference with
 ./test_sq8             # vectorisation off, which one gcc line cannot express
 ```
+
+**Expected output.** The first line tells you which kernels your CPU will
+actually exercise, so a machine without i8mm reports `i8mm=0` and skips the
+tile section loudly rather than printing a silent pass:
+
+```
+==============================================================
+sq8 correctness
+==============================================================
+
+kernels agree with scalar reference
+  cpu: dotprod=1 i8mm=1 sve=1 sve2=0
+  ok    d=8     scalar/neon/sdot == scalar (17076)
+  ...
+smmla 2x2 tile agrees with scalar, at every dimension
+  ok    d=8     smmla tile == scalar, ids and scores
+  ...
+search quality against exact float32
+  ok    scalar recall@10 = 0.994 (>= 0.95)
+  ok    neon   recall@10 = 0.994 (>= 0.95)
+  ok    sdot   recall@10 = 0.994 (>= 0.95)
+  ok    smmla  recall@10 = 0.994 (>= 0.95)
+
+PASSED (0 failures)
+```
+
+Then the two benchmarks behind the headline tables:
+
+```sh
+python bench/bench_real_embeddings.py   # the 143.8 -> 2,106.2 QPS stack
+python bench/cost.py                    # dollars per million queries
+python bench/blocked.py                 # roofline + the i8mm block sweep
+```
+
+Each writes its raw output to [`results/`](results/), which is committed, so
+every table above can be read without running anything.
 
 ## Correctness comes before speed
 
