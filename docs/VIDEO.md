@@ -1,73 +1,64 @@
-# Demo video script
+# Demo video
 
-Target **2:40**, hard limit 3:00. Narration below is 395 words, which lands at
-2:38 read at a natural 150 words per minute. Do not speed up to fit more in;
-cut a shot instead.
+**Built and cut. 2:53, 1920x1080, under the competition's 3:00 cap.**
 
-The competition rewards "clear optimization work and measurable improvements",
-so the shape is: an anomaly, the reason, the fix, the number, and the part we
-got wrong. The last one is the differentiator and it gets real screen time
-rather than a footnote.
+The shape is: the surprise first, then the reason, the fix, the live proof,
+and the part we got wrong. The last one gets real screen time rather than a
+footnote, because it is the differentiator.
 
 ---
 
-## Shot list
+## What is on screen
 
-**Lead with the surprise, not the build.** The two findings worth someone's
-attention are that quantizing for memory on Arm costs you money, and that
-i8mm is worth exactly nothing until you change the loop. Those are results.
-The kernel is just how we got them.
+| # | Length | Shot | The point |
+| --- | --- | --- | --- |
+| 0 | 3s | Title | Names the one finding that argues against us |
+| 1 | 27s | Cost table from `results/cost.json` | Quantizing to int8 on Arm nearly triples cost per query |
+| 2 | 29s | `armscope/scan.py` output, `results/scan-faiss.json` | Zero SDOT, zero SMMLA, 100% coverage. Not a build flag |
+| 3 | 17s | FAISS decode loop beside `sq8/sq8.c` | Quantize the query too, and the loop becomes int8 by int8 |
+| 4 | 30s | **Live**, search.rowset.co | 185.8ms against 51.1ms, measured on camera |
+| 5 | 27s | Instruction stack from the README verdict block | The design alone is *slower*. All the speed is the instructions |
+| 6 | 22s | Matched block factor table | i8mm is worth 1.00x on a flat scan |
+| 7 | 18s | The five corrected numbers, CI badge, repo | Every benchmark runs in CI on free Arm runners |
 
-| # | Time | On screen | Narration |
-|---|---|---|---|
-| 1 | 0:00–0:20 | The cost table from `results/cost.json`, `$1.39` and `$0.49` highlighted | "If you run vector search on Arm, you have probably been told to quantize to int8 to save memory. On Graviton that costs you sixty-five percent of your throughput. A million queries goes from forty-nine cents to a dollar thirty-nine. You save four times the RAM and pay nearly three times the compute, and nobody tells you, because the advice is architecture agnostic and this consequence is not." |
-| 2 | 0:18–0:40 | `probe/scan.py` output: 1.8M instructions, zero dotprod, zero i8mm, coverage 100% | "libfaiss has one point eight million instructions and exactly zero SDOT or SMMLA, at full disassembly coverage. Not a build problem. It is the design: FAISS keeps the query in float, so every distance has to convert each stored byte back to float before multiplying. There is no integer multiply left for an integer instruction to accelerate." |
-| 3 | 0:40–1:02 | Side-by-side diff: FAISS dequantize loop vs `sq8` int8 dot product; then the SDOT and SMMLA intrinsics in `sq8.c` | "So quantize the query too. Now the inner loop is int8 times int8, which is exactly the shape SDOT and SMMLA were added to Armv8 to accelerate. That one change is what makes the Arm instruction set reachable at all." |
-| 4 | 1:02–1:38 | **Live**: search.rowset.co, click "quantum entanglement", let the bars animate. Then "Roman aqueducts" | "This is running now on two Arm cores with no GPU, over three million passages from Wikipedia, Stack Exchange, arXiv and Project Gutenberg. Every query runs twice, once on the stock int8 index and once on ours, so this is measured in front of you rather than quoted. Stock, 185 milliseconds. Ours, 51. Same machine, same instant, and both return the same passages." |
-| 5 | 1:38–2:06 | The instruction-stack table from the README verdict block | "Here is the part that surprised us. With a genuinely scalar kernel, our design is *slower* than the FAISS index it replaces. The quantization change does not buy speed. It buys eligibility. All of the speed is the instruction stack: NEON five point two, dot product two point two on top, i8mm one point three on top of that. Fourteen point six times, from Arm instructions." |
-| 6 | 2:06–2:28 | The matched-block-factor table: 1.00x at B=1, 1.29x at B=16 | "And i8mm specifically taught us something. Measured against SDOT at a matched block factor, it is worth nothing at all on a flat scan, and one point two nine once you restructure the loop to give it enough work per byte. Our first published figure conflated the instruction with the loop order. It is withdrawn, and that correction is in the repo." |
-| 7 | 2:28–2:40 | Scroll the README retraction notes; end on the CI badge and the repo URL | "Five separate numbers in this project were wrong and are documented as wrong, including two we only found because someone else re-measured them. Every benchmark runs in CI on free Arm runners. Take the number, or take the script and check it." |
-| 8 | *optional*, replaces 20s of 4 | **Pi 5, network cable visibly unplugged.** Type a question in plain English, get an encyclopedia answer | "And the same kernel moves the other end. This is a sixty dollar board with no network. Ask it a question in your own words, and it answers out of an encyclopedia stored on the card." |
+## How it was made, since the honesty of shot 4 depends on it
 
-**On shot 8.** Cut it entirely if the board has not arrived, and do not
-reshoot the film around it. It is the last twenty seconds, not the thesis:
-this entry is in the Cloud AI track and the spine is the cost finding. Also
-expect the Pi's real numbers to be worse than the Graviton N1 proxy, because
-a Pi 5 has perhaps a third of the memory bandwidth and this workload is
-bandwidth-sensitive. If they are worse, publish the correction before the
-video is cut rather than after.
+The live shot is a real browser against the real deployment. The manifest, the
+two timings and every passage came back over the network from the Graviton3
+instance while the recording ran.
 
----
+Three things were done to it, all of which are worth stating:
 
-## Capture notes
+- **The browser is warmed before the take.** A fresh context paid four seconds
+  on its first query while a second worker loaded the embedder. That is a
+  startup artifact, not the search, so a throwaway query runs first and the
+  page is reloaded clean. The timings shown are unaffected.
+- **The lead-in is trimmed.** Nothing inside the shot is cut.
+- **The footage is never slowed or sped up.** The shot was choreographed to
+  fill the narration's length instead, because stretching it would misreport
+  the one thing it exists to show.
 
-Read [[windows-screen-capture-for-demos]] before recording. The traps that
-have cost time before:
+The query order was chosen so that the two numbers the narration says out loud
+are the two numbers on screen at that moment. They are 185.8 and 51.1.
 
-- **Windows Terminal captures as pure black.** Use `conhost`.
-- Never grab the full desktop. Capture the window region, and crop the
-  taskbar out.
-- Pixel-double small text so it survives compression on Devpost.
-- Use a ready-flag handshake rather than sleeping between capture steps.
-
-For shot 4, load the page **before** starting the recording so the manifest
-fetch is done and the first click is instant. Use the example chips rather
-than typing: they are chosen to score well and typing burns four seconds.
+Everything else in the cut is a headless render of real artifacts at native
+1920x1080, so no frame is upscaled and the type survives re-encoding.
 
 ## Narration
 
-Either Mark reads it, or run it through the ElevenLabs key already configured
-in the Cast project's `.env`, which is how the last three videos were
-narrated. Machine narration is fine here; the content carries it and a clean
-read beats an anxious one.
+Machine read, ElevenLabs, one clip per shot. The first pass measured 3:13
+against a 3:00 cap, so the **copy was cut** and the delivery nudged 10%, from
+124 words per minute to 137, still under a normal narration pace. Nothing is
+rushed to conceal length.
 
-## What to leave out
+## What is deliberately not in it
 
-Deliberately not in the video, because three minutes cannot hold them and the
-README covers them properly:
+Three minutes cannot hold these, and the README covers them properly:
 
-- PQ fast-scan, memory cost per vector, and the recall band. Important, but
-  the honest version needs a table and a caveat and will eat forty seconds.
-- The roofline. The prediction being wrong is a good story and it is the
-  second-best one here; shot 6 already carries the "we were wrong" beat.
+- PQ fast-scan, memory cost per vector, and the recall band. Important, but the
+  honest version needs a table and a caveat and would eat forty seconds.
+- The roofline. A good story, and the second best one here; shot 6 already
+  carries the "we were wrong" beat.
 - The corpus ingestion work. Invisible to a judge and irrelevant to the claim.
+- The Raspberry Pi. This entry is in the **Cloud AI** track and the spine is
+  the cost finding. A board would be a closing flourish, not the thesis.

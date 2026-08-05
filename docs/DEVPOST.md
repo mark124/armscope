@@ -76,7 +76,7 @@ FAISS is the default vector index for most retrieval systems, and its
 for FAISS's own exact float32 search.
 
 That is a strange result, so we looked at the binary rather than guessing.
-`libfaiss.so` contains 1.8 million instructions and **exactly zero SDOT or
+`libfaiss.so` contains 1.9 million instructions and **exactly zero SDOT or
 SMMLA**, at 100% disassembly coverage. The reason is in the design, not the
 build: FAISS keeps the query in float32, so every distance dequantizes each
 stored component back to float before multiplying. There is no int8 multiply

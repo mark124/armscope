@@ -86,7 +86,7 @@ This fixes it.**
 `IndexScalarQuantizer` stores vectors as int8 to save memory, then computes
 distances by dequantizing every stored component back to float32, because it
 keeps the query in float. That operation cannot use Arm's int8 instructions:
-`libfaiss.so` contains 1.8 million instructions and **exactly zero SDOT or
+`libfaiss.so` contains 1.9 million instructions and **exactly zero SDOT or
 SMMLA**, at 100% scan coverage. Measured on Neoverse N2 it runs at **15.0
 million dot products per second**, slower than FAISS's own exact float32 index.
 
@@ -436,8 +436,12 @@ Every objection below was tested rather than assumed, in
 Two direct lines of evidence, both reproducible, plus one piece of prior art
 that we previously overstated and have demoted.
 
-1. **Binary.** `libfaiss.so` contains 1,818,963 instructions at 100% scan
-   coverage: 544 SVE, **zero dotprod, zero i8mm**.
+1. **Binary.** `libfaiss.so` contains 1,874,423 instructions at 100% scan
+   coverage: 544 SVE, **zero dotprod, zero i8mm**. That is `faiss-cpu` 1.15.0,
+   the version `pip` resolves to today; an earlier release measured 1,818,963
+   at the same coverage, with the same 544 SVE and the same two zeros. The
+   instruction total moves with the release and the two zeros do not, which is
+   the part the claim rests on.
 2. **Source.** The FAISS repository contains no occurrence of `vdotq`,
    `vmmlaq`, or `i8mm` anywhere.
 

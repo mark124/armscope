@@ -39,9 +39,10 @@ keeps the query in float32, so `distance_to_code` dequantizes each stored
 component with a scale and offset before multiplying. That leaves no integer
 multiply for an integer instruction to accelerate:
 
-- `libfaiss.so` from the `faiss-cpu` aarch64 wheel disassembles to 1,818,963
-  instructions at 100% coverage, containing 544 SVE instructions and **zero
-  `SDOT`/`UDOT` and zero `SMMLA`/`UMMLA`**.
+- `libfaiss.so` from the `faiss-cpu` 1.15.0 aarch64 wheel disassembles to
+  1,874,423 instructions at 100% coverage, containing 544 SVE instructions and
+  **zero `SDOT`/`UDOT` and zero `SMMLA`/`UMMLA`**. The instruction total moves
+  between releases; the two zeros have not.
 - The source tree contains no occurrence of `vdotq`, `vmmlaq`, or `i8mm`.
 
 Quantizing the query as well makes the inner loop a pure int8 dot product,
