@@ -16,7 +16,7 @@ FAISS int8 mode, at slightly better recall.**
 *[search.rowset.co](https://search.rowset.co), 3M passages on two Arm cores
 with no GPU. Every query runs on the stock int8 index and on ours, so the
 difference is measured in front of you. There is a [2:53 walkthrough of the
-findings](docs/VIDEO.md) as well.*
+findings](https://youtu.be/5VZnwt4rYoE) as well.*
 
 **What this repo actually contributes**, since the technique is not new: a
 trustworthy number for a widely repeated but unverified claim. Getting it

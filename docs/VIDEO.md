@@ -1,6 +1,7 @@
 # Demo video
 
-**Built and cut. 2:53, 1920x1080, under the competition's 3:00 cap.**
+**Built, cut and published: [youtu.be/5VZnwt4rYoE](https://youtu.be/5VZnwt4rYoE).
+2:53, 1920x1080, under the competition's 3:00 cap.**
 
 The shape is: the surprise first, then the reason, the fix, the live proof,
 and the part we got wrong. The last one gets real screen time rather than a

@@ -274,7 +274,7 @@ Stated here rather than left for a judge to find.
 
 - Repo: https://github.com/mark124/armscope (MIT)
 - Live demo: https://search.rowset.co
-- Video: _(paste the YouTube URL once the cut is uploaded)_
+- Video: https://youtu.be/5VZnwt4rYoE (2:53, embeds at the top of the entry)
 - Every benchmark runs in CI on free Arm runners: `.github/workflows/`
 
 ## Video, ready to upload
